@@ -1,0 +1,3078 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WB DIAG v22</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23E87820'/><text x='16' y='23' font-family='Arial,sans-serif' font-weight='bold' font-size='16' fill='white' text-anchor='middle'>WB</text></svg>">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0e0e11; --surface: #16161c; --border: #252530;
+  --text: #d0d0da; --muted: #585870; --accent: #e8a020;
+  --blue: #4a8fe8; --green: #3ecf6a; --magenta: #c060c0;
+  --amber: #e87820; --red: #e05050;
+  --font-mono: ui-monospace, 'SF Mono', monospace;
+}
+body { background:var(--bg); color:var(--text); font-family:var(--font-mono); font-size:12px; max-width:500px; margin:0 auto; padding:10px; }
+h1   { font-size:13px; color:var(--accent); letter-spacing:2px; margin-bottom:2px; }
+.sub { font-size:9px; color:var(--muted); margin-bottom:10px; line-height:1.8; }
+
+/* ── Desktop 3-column layout ── */
+@media (min-width:768px) {
+  body { max-width:1400px; padding:16px 20px; }
+  h1, .sub { display:none; }
+  .slot {
+    display:grid;
+    grid-template-columns: minmax(0,1.5fr) minmax(0,1.2fr) minmax(0,1.7fr);
+    column-gap:18px;
+    align-items:stretch;
+  }
+  .slot > .left-col    { grid-column:1; position:relative; }
+  .slot > .mid-col     { grid-column:2; min-height:300px; }
+  .slot > .table-area  { grid-column:3; min-height:300px; }
+}
+.photo-wrap { position:relative; width:100%; background:#111115; border:1px solid var(--border); border-radius:6px; overflow:hidden; cursor:crosshair; }
+.photo-inner { position:relative; width:100%; min-height:200px; }
+.photo-canvas { display:block; width:100%; height:auto; vertical-align:top; }
+.photo-canvas.loading { filter:blur(5px); opacity:0.6; transition:filter 200ms, opacity 200ms; }
+
+/* ── UI STATE MACHINE (Вариант 3) ──────────────────────────────────────────
+   Единственный источник правды для видимости элементов слота A.
+   JS меняет только: document.body.dataset.stateA = 'empty'|'loading'|'loaded'
+   Добавление нового элемента: 1) строку в каждый блок ниже, 2) проверку в assertUIState
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* empty: начальное состояние и после сброса */
+body[data-state-a="empty"] #creativeCalcA   { display: block; }
+body[data-state-a="empty"] #phA             { display: block; }
+body[data-state-a="empty"] #canvasA         { filter:none; opacity:1; }
+body[data-state-a="empty"] #spotHistA       { display: none !important; }
+
+/* loading: файл обрабатывается */
+body[data-state-a="loading"] #creativeCalcA { display: none; }
+body[data-state-a="loading"] #phA           { display: none; }
+body[data-state-a="loading"] #canvasA       { filter:blur(5px); opacity:0.6;
+                                              transition:filter 200ms,opacity 200ms; }
+body[data-state-a="loading"] #spotHistA     { display: none !important; }
+
+/* loaded: фото готово, споты доступны */
+body[data-state-a="loaded"] #creativeCalcA  { display: none; }
+body[data-state-a="loaded"] #phA            { display: none; }
+body[data-state-a="loaded"] #canvasA        { filter:none; opacity:1; }
+body[data-state-a="loaded"] #spotHistA      { display: block; }
+
+/* spotRowA и autoBtnA: spotRow всегда виден, autoBtn управляется классом .visible (базовый CSS) */
+
+/* photoWrapContainerA всегда виден — управляется initEmptyUI один раз */
+.circles-canvas { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+.placeholder { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:10px; color:var(--muted); text-align:center; line-height:2.2; }
+.file-btn { display:flex; align-items:center; min-height:30px; width:100%; margin-top:5px; box-sizing:border-box; background:transparent; border:1px solid var(--border); border-radius:5px; color:var(--muted); font-family:var(--font-mono); font-size:10px; padding:6px; cursor:pointer; transition:all 0.2s; }
+.file-btn.loading { animation:pulse-btn 800ms ease-in-out infinite; pointer-events:none; border-color:var(--accent); color:var(--accent); }
+@keyframes pulse-btn { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+.file-btn:hover { border-color:var(--accent); color:var(--accent); }
+.spot-row { display:flex; width:100%; margin-top:5px; gap:4px; align-items:stretch; flex-wrap:nowrap; }
+.auto-btn { display:none!important; background:transparent; border:1px solid var(--muted); border-radius:5px; color:var(--muted); font-family:var(--font-mono); font-size:9px; padding:5px 6px; cursor:pointer; white-space:nowrap; flex-shrink:0; min-width:52px; }
+.auto-btn.visible { display:inline-flex!important; align-items:center; justify-content:center; }
+.auto-btn:active { opacity:0.7; }
+.spot-row .spot-btns { display:flex; flex:1; gap:4px; margin-top:0; min-width:0; overflow:hidden; }
+.export-btn { display:block; width:100%; margin-top:5px; background:transparent; border:1px solid var(--accent); border-radius:5px; color:var(--accent); font-family:var(--font-mono); font-size:10px; font-weight:bold; padding:7px; cursor:pointer; letter-spacing:1px; }
+.export-btn:active { opacity:0.7; }
+.export-btn:disabled { opacity:0.28; cursor:default; border-color:var(--muted); color:var(--muted); }
+.progress-overlay { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; z-index:10; background:rgba(14,14,17,0.55); }
+.spinner-wrap { position:relative; width:144px; height:144px; flex-shrink:0; }
+.spinner { position:absolute; inset:0; border:8px solid var(--border); border-top:8px solid var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
+.spinner-pct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--accent); font-size:36px; font-weight:bold; font-family:var(--font-mono); pointer-events:none; }
+@keyframes spot-blink { 0%,100%{opacity:1;} 50%{opacity:0.15;} }
+@keyframes btn-blink { 0%,100%{opacity:1;background:var(--accent);color:#000;} 50%{opacity:0.5;} }
+.spot-btn-main.blink { animation:btn-blink 0.7s ease-in-out infinite; border-color:var(--accent); }
+@keyframes spin { to { transform:rotate(360deg); } }
+.progress-label { font-size:9px; color:var(--accent); letter-spacing:1px; }
+.spot-hist { position:absolute; top:8px; right:8px; z-index:5; border-radius:4px 4px 0 0; border:1px solid rgba(0,0,0,0.15); display:none; box-shadow:0 2px 8px rgba(0,0,0,0.18); }
+
+
+.spot-btns { display:none; width:100%; margin-top:5px; gap:4px; justify-content:space-between; }
+.spot-btns.visible { display:flex; }
+.spot-btn-pair { display:flex; flex:1; min-width:0; gap:0; }
+.spot-btn-main { flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-right:none; border-radius:4px 0 0 4px; color:var(--text); font-family:var(--font-mono); font-size:9px; padding:5px 4px; cursor:pointer; text-align:left; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.spot-btn-main:active { opacity:0.7; }
+.spot-btn-main.ok  { border-color:var(--green);  color:var(--green);  }
+.spot-btn-main.warn{ border-color:var(--amber);  color:var(--amber);  }
+.spot-btn-main.bad { border-color:var(--red);    color:var(--red);    }
+.spot-btn-main.active { border-color:var(--accent); color:var(--accent); }
+.spot-btn-del { background:var(--surface); border:1px solid var(--border); border-radius:0 4px 4px 0; color:var(--muted); font-family:var(--font-mono); font-size:10px; padding:5px 7px; cursor:pointer; }
+.spot-btn-del:active { color:var(--red); border-color:var(--red); }
+.timing { display:none; }
+.result-area { margin-top:8px; }
+.creative-calc { position:absolute; top:0; left:0; right:0; z-index:5; padding:10px; background:var(--surface); border:1px solid var(--border); border-radius:6px; }
+.creative-ttl { font-size:9px; color:var(--accent); letter-spacing:1px; margin-bottom:6px; }
+.creative-tbl { width:100%; border-collapse:collapse; font-size:10px; line-height:1.9; table-layout:fixed; }
+.creative-tbl col:nth-child(1){width:52px}.creative-tbl col:nth-child(2){width:48px}.creative-tbl col:nth-child(3){width:44px}.creative-tbl col:nth-child(4){width:20px}
+.creative-tbl td { padding:2px 5px; border-bottom:1px solid var(--border); }
+.creative-tbl tr:last-child td { border-bottom:none; }
+.creative-tbl .opt { color:var(--accent); font-weight:bold; }
+.exif-info { min-height:52px; background:var(--surface); border:1px solid var(--border); border-radius:5px; padding:5px 8px; margin-top:5px; font-size:9px; color:var(--muted); line-height:1.7; }
+.warnings { background:var(--surface); border:1px solid var(--amber); border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:9px; color:var(--amber); line-height:1.8; }
+.tbl { width:100%; border-collapse:collapse; border:1px solid var(--border); border-radius:6px; overflow:hidden; font-size:10px; margin-bottom:8px; }
+.tbl th { background:var(--surface); color:var(--muted); font-size:8px; letter-spacing:1px; text-transform:uppercase; padding:3px 4px; border-bottom:1px solid var(--border); text-align:left; }
+.tbl th.hz { color:var(--accent); }
+.tbl td { padding:0 4px; border-bottom:1px solid var(--border); vertical-align:middle; height:18.8px; max-height:18.8px; line-height:18.8px; font-size:9px; white-space:nowrap; overflow:hidden; }
+.tbl tr:last-child td { border-bottom:none; }
+.tbl tr.sep td { border-top:1px solid var(--border); background:rgba(255,255,255,0.01); height:18.8px; max-height:18.8px; }
+.frame-results { margin-top:12px; border-top:1px solid var(--border); padding-top:8px; }
+.frame-ttl { font-size:9px; color:var(--blue); letter-spacing:1px; margin-bottom:6px; text-transform:uppercase; }
+.frame-tbl td:first-child { width:40%; }
+.lbl { color:var(--muted); font-size:9px; white-space:nowrap; min-width:72px; }
+.vK{color:var(--accent);font-weight:bold;} .vM{color:var(--magenta);font-weight:bold;} .vG{color:var(--green);font-weight:bold;}
+.vN{color:var(--muted);} .vA{color:var(--amber);} .vBl{color:var(--blue);} .vR{color:var(--muted);font-size:9px;}
+.rR{color:#e05050;} .rG{color:#3ecf6a;} .rB{color:#4a8fe8;}
+.cmp-box{padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:10px;line-height:2;margin-bottom:8px;}
+.cmp-ttl{font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:3px;}
+.range-box{padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:10px;line-height:2;margin-bottom:8px;}
+.range-ttl{font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:2px;}
+.timing-box{padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:9px;color:var(--muted);line-height:1.9;margin-bottom:8px;}
+.t-slow{color:var(--red)!important;}
+.warn{color:var(--amber);}
+</style>
+</head>
+<body>
+<div class="slot">
+  <!-- col 1: превью или творческий калькулятор -->
+  <div class="left-col">
+    <div id="creativeCalcA" class="creative-calc">
+      <div class="creative-ttl">ТВОРЧЕСКИЙ КАЛЬКУЛЯТОР</div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:8px">Введите K из приложения на телефоне</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <input id="tInputA" type="number" min="1000" max="15000" placeholder="напр. 4823"
+          style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 8px">
+        <button onclick="renderCreativeTable('A')"
+          style="background:var(--accent);color:#000;border:none;border-radius:5px;font-family:var(--font-mono);font-size:11px;font-weight:bold;padding:6px 10px;cursor:pointer">K</button>
+      </div>
+      <div id="creativeTableA"></div>
+    </div>
+    <div id="photoWrapContainerA">
+    <div class="photo-wrap" id="wrapA">
+      <div class="photo-inner" id="innerA">
+        <canvas class="photo-canvas" id="canvasA"></canvas>
+        <canvas class="circles-canvas" id="circlesA"></canvas>
+        <canvas class="spot-hist" id="spotHistA" width="208" height="116"></canvas>
+
+        <div class="placeholder" id="phA">📷</div>
+        <div class="progress-overlay" id="progressOverlayA">
+          <div class="spinner-wrap">
+            <div class="spinner"></div>
+            <div class="spinner-pct" id="progressPctA"></div>
+          </div>
+          <div class="progress-label" id="progressLabelA"></div>
+        </div>
+      </div><!-- /innerA -->
+    </div><!-- /wrapA -->
+    </div><!-- /photoWrapContainerA -->
+  </div>
+  <!-- col 2: управление + расчёты -->
+  <div class="mid-col">
+    <div style="position:relative;margin-bottom:10px">
+<svg viewBox="0 0 200 30" style="width:100%;height:auto;display:block" xmlns="http://www.w3.org/2000/svg">
+  <path d="M194,30H6c-3.314,0-6-2.686-6-6V6c0-3.314,2.686-6,6-6h188c3.314,0,6,2.686,6,6v18C200,27.314,197.314,30,194,30z" style="fill:#E87820"/>
+  <path d="M30.2080078,6.8066406l-3.9960938,14.6630859h-2.7714844l-2.0410156-8.0029297l-2.0732422,8.0029297h-2.7714844l-3.78125-14.6630859h4.2753906l2.2236328,8.8945313l2.2236328-8.8945313h2.5029297l2.1914063,8.9267578l2.3417969-8.9267578H30.2080078z M31.3144531,21.4697266V6.8066406h6.5205078c3.3583984,0,5.0380859,1.199707,5.0380859,3.5986328c0,1.7045898-1.0136719,2.796875-3.0400391,3.2763672c2.4418945,0.4873047,3.6630859,1.7832031,3.6630859,3.8886719c0,2.5996094-1.6435547,3.8994141-4.9306641,3.8994141H31.3144531z M35.5683594,13.1875h1.3105469c1.2099609,0,1.8154297-0.8950195,1.8154297-2.6855469c0-1.6542969-0.6411133-2.4814453-1.9228516-2.4814453h-1.203125V13.1875z M35.5683594,20.2558594h1.2138672c1.5898438,0,2.3847656-0.9091797,2.3847656-2.7285156c0-2.0839844-0.8203125-3.1259766-2.4599609-3.1259766h-1.1386719V20.2558594z M61.4462891,15.5830078l1.8154297,0.4726563c0.0283203,0.3720703,0.0429688,0.6943359,0.0429688,0.9667969c0,1.4248047-0.515625,2.5634766-1.546875,3.4160156s-2.4135742,1.2783203-4.1464844,1.2783203c-4.347168,0-6.5205078-2.4453125-6.5205078-7.3369141c0-2.3203125,0.6337891-4.2016602,1.9013672-5.6450195c1.2675781-1.4428711,2.9179688-2.1645508,4.9521484-2.1645508c3.1723633,0,4.7587891,1.5253906,4.7587891,4.5761719l-1.8261719,0.8378906c0.0214844-0.4296875,0.0322266-0.7626953,0.0322266-0.9990234c0-2.1625977-0.8666992-3.2441406-2.5996094-3.2441406c-1.8334961,0-2.75,2.2954102-2.75,6.8857422c0,3.9462891,1.0239258,5.9189453,3.0722656,5.9189453c0.8447266,0,1.5483398-0.3369141,2.1108398-1.0097656c0.5620117-0.6728516,0.8432617-1.5146484,0.8432617-2.5244141C61.5859375,16.6894531,61.5390625,16.2128906,61.4462891,15.5830078z M71.5761719,6.8066406l4.0820313,14.6630859h-4.2753906l-0.8701172-3.1796875h-4.4150391l-0.9345703,3.1796875h-1.6650391l4.3398438-14.6630859H71.5761719z M66.5166016,16.8183594h3.5986328l-1.7294922-6.4990234L66.5166016,16.8183594z M81.0615234,6.8066406v13.1914063h6.0263672v1.4716797H76.8076172V6.8066406H81.0615234z M97.7016602,15.5830078l1.8144531,0.4726563C99.5454102,16.4277344,99.559082,16.75,99.559082,17.0224609c0,1.4248047-0.515625,2.5634766-1.546875,3.4160156s-2.4121094,1.2783203-4.1464844,1.2783203c-4.3466797,0-6.5200195-2.4453125-6.5200195-7.3369141c0-2.3203125,0.6337891-4.2016602,1.9013672-5.6450195c1.2670898-1.4428711,2.9174805-2.1645508,4.9526367-2.1645508c3.171875,0,4.7578125,1.5253906,4.7578125,4.5761719l-1.8261719,0.8378906c0.0214844-0.4296875,0.0332031-0.7626953,0.0332031-0.9990234c0-2.1625977-0.8671875-3.2441406-2.5996094-3.2441406c-1.8339844,0-2.75,2.2954102-2.75,6.8857422c0,3.9462891,1.0234375,5.9189453,3.0722656,5.9189453c0.84375,0,1.5488281-0.3369141,2.1113281-1.0097656c0.5605469-0.6728516,0.8417969-1.5146484,0.8417969-2.5244141C97.840332,16.6894531,97.793457,16.2128906,97.7016602,15.5830078z M116.3808594,10.6416016l-3.6416016,10.828125h-2.7285156l-3.7597656-10.828125h4.1787109l2.2988281,7.2509766l2.3632813-7.2509766H116.3808594z M117.4013672,21.4697266V6.8066406h6.0800781c4.3183594,0,6.4775391,2.4492188,6.4775391,7.3476563c0,4.8769531-2.2382813,7.3154297-6.7138672,7.3154297H117.4013672z M121.6552734,20.2558594h1.1171875c1.0244141,0,1.7333984-0.4423828,2.1269531-1.3271484c0.3935547-0.8837891,0.5908203-2.4824219,0.5908203-4.7958984c0-2.3129883-0.1953125-3.9101563-0.5849609-4.7910156c-0.390625-0.8808594-1.1015625-1.3212891-2.1328125-1.3212891h-1.1171875V20.2558594z M136.1035156,6.8066406v14.6630859h-4.2539063V6.8066406H136.1035156z M145.3095703,6.8066406l4.0820313,14.6630859h-4.2753906l-0.8701172-3.1796875h-4.4150391l-0.9345703,3.1796875h-1.6650391l4.3398438-14.6630859H145.3095703z M140.25,16.8183594h3.5986328l-1.7294922-6.4990234L140.25,16.8183594z M156.2773438,13.5527344h6.0371094v7.9169922h-1.3535156l-0.4619141-1.0097656c-1.1816406,0.8378906-2.4316406,1.2568359-3.7490234,1.2568359c-2.1699219,0-3.8544922-0.6503906-5.0546875-1.9501953c-1.1992188-1.2998047-1.7988281-3.1308594-1.7988281-5.4941406c0-2.2988281,0.6357422-4.1586914,1.90625-5.5805664c1.2714844-1.4213867,2.9345703-2.1323242,4.9902344-2.1323242c2.7070313,0,4.3544922,1.3823242,4.9414063,4.1464844l-1.9980469,0.9130859v-0.3544922l-0.0322266-0.7949219c-0.1357422-1.7255859-0.9345703-2.5888672-2.3955078-2.5888672c-1.0742188,0-1.8085938,0.4584961-2.2021484,1.375c-0.3935547,0.9169922-0.5908203,2.625-0.5908203,5.1240234c0,2.3349609,0.1591797,3.9208984,0.4785156,4.7587891c0.3183594,0.8378906,0.9248047,1.2568359,1.8203125,1.2568359c1.0527344,0,1.5791016-0.5869141,1.5791016-1.7617188v-3.609375h-2.1162109V13.5527344z"/>
+</svg>
+<span style="position:absolute;bottom:4px;right:8px;font-size:22px;font-family:ui-monospace,SF Mono,monospace;color:#000;letter-spacing:0.5px;pointer-events:none;font-weight:bold">v25</span>
+<button id="superDiagBtn" onclick="toggleSuperPanel()" title="Диагностика суперспота"
+  style="position:absolute;top:3px;right:148px;background:#1a1a1a;border:none;border-radius:3px;padding:2px 5px;cursor:pointer;line-height:1.3;display:flex;flex-direction:column;align-items:center;gap:1px">
+  <span style="font-size:9px;color:#c47fff;font-family:ui-monospace,SF Mono,monospace;letter-spacing:0.5px;font-weight:bold">Супер</span>
+</button>
+<button id="histDiagBtn" onclick="toggleHistPanel()" title="Гистограмма кадра"
+  style="position:absolute;top:3px;right:100px;background:#1a1a1a;border:none;border-radius:3px;padding:2px 5px;cursor:pointer;line-height:1.3;display:flex;flex-direction:column;align-items:center;gap:1px">
+  <span style="font-size:9px;color:#c47fff;font-family:ui-monospace,SF Mono,monospace;letter-spacing:0.5px;font-weight:bold">Гист</span>
+</button>
+<button id="vectorDiagBtn" onclick="toggleVectorPanel()" title="Векторная диаграмма"
+  style="position:absolute;top:3px;right:52px;background:#1a1a1a;border:none;border-radius:3px;padding:2px 5px;cursor:pointer;line-height:1.3;display:flex;flex-direction:column;align-items:center;gap:1px">
+  <span style="font-size:9px;color:#5b9cf6;font-family:ui-monospace,SF Mono,monospace;letter-spacing:0.5px;font-weight:bold">Вектор</span>
+</button>
+<button id="debugToggleBtn" onclick="toggleDebugPanel()" title="Debug панель"
+  style="position:absolute;top:3px;right:6px;background:#1a1a1a;border:none;border-radius:3px;padding:2px 5px;cursor:pointer;line-height:1.3;display:flex;flex-direction:column;align-items:center;gap:1px">
+  <span style="font-size:9px;color:#E87820;font-family:ui-monospace,SF Mono,monospace;letter-spacing:0.5px;font-weight:bold">Debug</span>
+</button>
+</div>
+    <div class="exif-info" id="exifInfoA"></div>
+    <div class="file-btn" id="btnA" onclick="if(!_fileLoaded_A)document.getElementById('fileA').click()">↑ Выбрать файл</div>
+    <input type="file" id="fileA" accept="image/jpeg,.jpg,.jpeg" style="display:none">
+    <button class="export-btn" id="exportA" onclick="exportReport('A')">↓ Скопировать отчёт</button>
+    <div class="spot-row" id="spotRowA">
+      <button class="auto-btn" id="autoBtnA">◎ АВТО</button>
+      <div class="spot-btns" id="spotBtnsA"></div>
+    </div>
+    <div class="result-area" id="resultA"></div>
+  </div>
+  <!-- col 3: таблица -->
+  <div class="table-area" id="tableA"></div>
+</div>
+
+<script>
+'use strict';
+const XYZ_to_RGB=[[3.24071,-0.969258,0.0556352],[-1.53726,1.87599,-0.203996],[-0.498571,0.0415557,1.05707]];
+/* ═══ АРХИТЕКТУРНЫЕ РЕШЕНИЯ — НЕ МЕНЯТЬ ═══
+ * Синхронизировано с RULES.md. Изменение требует обновления обоих мест.
+ * - Только JPEG, CR2 не поддерживается в v1
+ * - Никаких внешних библиотек, EXIF парсится своим кодом (R12)
+ * - Один HTML файл, один слот — второй не планируется
+ * - Web Workers не используются
+ * - IIFE не применяется
+ * - renderDiag не разбивается на функции
+ * - samplePatch один вызов (r=300), p250 из тех же данных
+ * - Автоотскок от края вместо предупреждения (R2.12)
+ * - Нулевые сдвиги B/A отображаются серым (R4.3a)
+ * - normOrient (полный canvas) + makeDispCanvas (scaled) — два объекта сознательно:
+ *   norm нужен для sampleBoth в оригинальном разрешении без интерполяции
+ * - GM_COEFF хранится в CONFIG.WB.GM_COEFF, let GM_COEFF удалён
+ * - resetSpots — локальная функция замыкания, не глобальная
+ ═══════════════════════════════════════════════════════ */
+
+// GM_COEFF: используется CONFIG.WB.GM_COEFF (дефолт 0.07)
+
+function escapeHtml(s){if(s===null||s===undefined)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+const CONFIG={
+  PATCH:  {R_SMALL:125, R_LARGE:300, MARGIN:302},
+  WARN:   {OVEREXPOSE:245, UNDEREXPOSE:15, BLUE_CLIP:5},
+  WB:     {GM_COEFF:0.07, TEMP_MIN:2000, TEMP_MAX:23000, MIRED_STEP:5, MIRED_SCALE:1000000},
+  HIST:   {CLIP_ZONE:240, SPOT_W:208, SPOT_H:116, SPOT_BTN_H:28},
+  DISP:   {MAX_PX:1200},
+  SCORE:  {OK:66, WARN:40},  // пороги score для кнопок и гистограммы
+  AUTO:   {
+    STEP_DIV:3,  // шаг sliding window = R_LARGE / STEP_DIV в диsp-пикселях
+    GRAY:  {target:[127,127,127], lumMin:70,  lumMax:200},
+    WHITE: {target:[230,230,230], lumMin:190, lumMax:255},
+    BLACK: {target:[20,20,20],    lumMin:5,   lumMax:45 }
+  },
+  APP_VERSION: 'v25 2026-03-13',  // §17.2 — единственное место
+  SUPER: { THR: 0.12, MIN_PX: 500, SIGMA_T_WARN:200, SIGMA_T_BAD:500 },  // §v1.2-A
+  EXIF:  { BUF_SIZE: 65536 }  // размер буфера для чтения EXIF
+};
+// ── Эталонные заглушки объектов — единственный источник правды о форме ──
+// Используются в renderDiag и assertShapeMatch. Добавить поле здесь = добавить везде.
+const FRM_FALLBACK={
+  hR:new Int32Array(256),hG:new Int32Array(256),hB:new Int32Array(256),
+  count:0,medR:0,medG:0,medB:0,meanR:0,meanG:0,meanB:0,
+  trimR:0,trimG:0,trimB:0,sigTrimR:0,sigTrimG:0,sigTrimB:0,
+  sigmaR:0,sigmaG:0,sigmaB:0,overPct:'0.0',underPct:'0.0'
+};
+const PATCH_FALLBACK={
+  count:0,medR:0,medG:0,medB:0,meanR:0,meanG:0,meanB:0,
+  trimR:0,trimG:0,trimB:0,sigTrimR:0,sigTrimG:0,sigTrimB:0,
+  sigmaR:0,sigmaG:0,sigmaB:0
+};
+// assertShapeMatch: проверяет что все ключи эталона есть в реальном объекте
+// console.warn всегда + dbgLog в буфер (виден при открытии дебага в любой момент)
+function assertShapeMatch(real, fallback, name){
+  if(!real) return;
+  for(const k of Object.keys(fallback)){
+    if(!(k in real)||real[k]===undefined){
+      const msg='SHAPE: '+name+'.'+k+' отсутствует или undefined';
+      console.warn('[assertShape]',msg);
+      dbgLog('\u26a0 '+msg);
+    }
+  }
+}
+// ═══════════════════════════════════════════════════
+// MATH — Temperature & WB calculations
+// ═══════════════════════════════════════════════════
+// T_MIN/T_MAX: используем CONFIG.WB.TEMP_MIN / CONFIG.WB.TEMP_MAX
+function Temperature_to_RGB(T){
+  let xD;
+  if(T<=4000)xD=0.27475e9/(T*T*T)-0.98598e6/(T*T)+1.17444e3/T+0.145986;
+  else if(T<=7000)xD=-4.6070e9/(T*T*T)+2.9678e6/(T*T)+0.09911e3/T+0.244063;
+  else xD=-2.0064e9/(T*T*T)+1.9018e6/(T*T)+0.24748e3/T+0.237040;
+  const yD=-3*xD*xD+2.87*xD-0.275,X=xD/yD,Y=1,Z=(1-xD-yD)/yD;
+  const RGB=[0,0,0];let max=0;
+  for(let c=0;c<3;c++){RGB[c]=X*XYZ_to_RGB[0][c]+Y*XYZ_to_RGB[1][c]+Z*XYZ_to_RGB[2][c];if(RGB[c]>max)max=RGB[c];}
+  for(let c=0;c<3;c++)RGB[c]/=max;
+  return RGB;
+}
+function RGB_to_Temperature(rgb){
+  const r=Math.max(rgb[0],0.001),g=Math.max(rgb[1],0.001),b=Math.max(rgb[2],0.001);
+  let Tmin=CONFIG.WB.TEMP_MIN,Tmax=CONFIG.WB.TEMP_MAX,tRGB;
+  while(Tmax-Tmin>0.1){const Tm=(Tmax+Tmin)/2;tRGB=Temperature_to_RGB(Tm);if(tRGB[2]/tRGB[0]>b/r)Tmax=Tm;else Tmin=Tm;}
+  const T=(Tmax+Tmin)/2;tRGB=Temperature_to_RGB(T);
+  let green=(tRGB[1]/tRGB[0])/(g/r);
+  green=Math.max(0.2,Math.min(2.5,green));
+  return{T,green};
+}
+function greenToSteps(green){return(green-1.0)/CONFIG.WB.GM_COEFF;}
+function calcStepsBA(T_exact,T_alt){
+  const delta=CONFIG.WB.MIRED_SCALE/T_alt-CONFIG.WB.MIRED_SCALE/T_exact,stepsBA=delta/5;
+  return{stepsBA,stepsBA_int:Math.max(-9,Math.min(9,Math.round(stepsBA)))};
+}
+function srgbToLinear(v8){const s=v8/255;return s<=0.04045?s/12.92:Math.pow((s+0.055)/1.055,2.4);}
+function calcWB(R8,G8,B8,lin){
+  if(R8<2&&G8<2&&B8<2)return{T_exact:5500,T_base:5500,T_remainder:0,green:1,stepsGM:0,stepsGM_int:0,stepsBA:0,stepsBA_int:0,valid:false};
+  let r,g,b;
+  if(lin){r=srgbToLinear(R8);g=srgbToLinear(G8);b=srgbToLinear(B8);}
+  else{r=R8/255;g=G8/255;b=B8/255;}
+  const{T,green}=RGB_to_Temperature([r,g,b]);
+  const stepsGM=greenToSteps(green),stepsGM_int=Math.max(-9,Math.min(9,Math.round(stepsGM)));
+  const T_base=Math.round(T/100)*100,T_remainder=T-T_base;
+  const{stepsBA,stepsBA_int}=calcStepsBA(T,T_base);
+  return{T_exact:T,T_base,T_remainder,green,stepsGM,stepsGM_int,stepsBA,stepsBA_int,valid:true};
+}
+
+// ── N2: applyBACorr — коррекция T_exact на B/A сдвиг камеры (FUTURE §1.1-B) ──
+// wbShiftBA: +=Amber, −=Blue (EXIF ARCH_SPEC §4.2). 1 шаг = 5 mired.
+// Камера запекает B/A сдвиг в пиксели → T_exact смещён → вычитаем через mired.
+// Знак: Blue (−) делает пиксели нейтральнее → T_exact завышен → mired растёт → T падает.
+function applyBACorr(wb, baShift){
+  if(!baShift) return wb;
+  const mired = CONFIG.WB.MIRED_SCALE/wb.T_exact - baShift * CONFIG.WB.MIRED_STEP;
+  const T_exact = CONFIG.WB.MIRED_SCALE / Math.max(1, mired);
+  const T_base = Math.round(T_exact/100)*100;
+  const T_remainder = T_exact - T_base;
+  const{stepsBA,stepsBA_int} = calcStepsBA(T_exact, T_base);
+  return{...wb, T_exact, T_base, T_remainder, stepsBA, stepsBA_int};
+}
+
+function getPatchWarnings(R8,G8,B8){
+  const warns=[];
+  if(Math.max(R8,G8,B8)>245)warns.push('⚠ пересвет');
+  if((R8+G8+B8)/3<15)warns.push('⚠ темно');
+  if(B8<5)warns.push('⚠ синий клипован');
+  return warns;
+}
+
+// ═══════════════════════════════════════════════════
+// PROGRESS
+// ═══════════════════════════════════════════════════
+const _progressTimers = {};
+// ═══════════════════════════════════════════════════
+// UI STATE MACHINE (UI_AUDIT_SPEC.md)
+// ═══════════════════════════════════════════════════
+// Три состояния: 'empty' | 'loading' | 'loaded'
+// CSS видимость управляется через body[data-state-a]
+// JS управляет только: прогресс, кнопки, споты, экспорт
+
+function setUIState(slotId, state){
+  const prev=document.body.dataset['state'+slotId.toLowerCase()];
+  dbgLog('setUIState '+slotId+' '+prev+'→'+state);
+  // CSS state — один атрибут на body
+  document.body.dataset['state'+slotId] = state;
+
+  const btn  = document.getElementById('btn'   +slotId);
+  const exp  = document.getElementById('export'+slotId);
+  const cv   = document.getElementById('canvas'+slotId);
+
+  if(state==='empty'){
+    if(cv){ cv.classList.remove('loading');
+            if(!cv.width||!cv.height){cv.width=400;cv.height=600;} }
+    if(btn){ btn.style.display=''; btn.style.cursor='';
+             btn.classList.remove('loading');
+             btn.innerHTML='↑ Выбрать файл';
+             btn.onclick=()=>{if(!_fileLoaded_A)document.getElementById('file'+slotId).click();}; }
+    if(exp){ exp.disabled=true; }
+  }
+  else if(state==='loading'){
+    if(cv){ cv.classList.add('loading'); }
+    if(btn){ btn.classList.add('loading'); }
+    if(exp){ exp.disabled=true; exp.style.opacity=''; }
+  }
+  else if(state==='loaded'){
+    if(cv){ cv.classList.remove('loading'); cv.style.display='block'; }
+    if(btn){ btn.classList.remove('loading'); }
+    // exp.disabled управляется отдельно после подтверждения спота
+  }
+
+  if(typeof assertUIState==='function') assertUIState(slotId, state);
+}
+
+// ═══ UI AUDIT (assertUIState / assertUIContent / dumpUIState / Auto-Tour) ═══
+// Debug панель: кнопка ⚙ в правом верхнем углу правой колонки.
+// assertUIState/assertUIContent логируют в консоль когда панель открыта.
+// UI_AUDIT_SPEC.md — полная спецификация.
+
+let _debugOpen = false;
+let _ycbcrMode = 'spots'; // 'spots' | 'frame' — переключатель диаграммы
+
+// ── §17.3 dbgLog — кольцевой буфер событий (50 записей) ──
+const _dbgLog = [];
+function dbgLog(msg){
+  const ts=performance.now().toFixed(0);
+  _dbgLog.push('['+ts+'ms] '+msg);
+  if(_dbgLog.length>50)_dbgLog.shift();
+  if(!_debugOpen) return;
+  const out=document.getElementById('_dbgLog');
+  if(out){out.textContent=_dbgLog.slice(-12).join('\n');out.style.display='block';}
+}
+
+// ── §17.5 perfMark — накопление min/max/avg per-operation ──
+const _perf={};
+function perfMark(name,ms){
+  // всегда накапливать, показывать только при открытой панели
+  if(!_perf[name])_perf[name]={n:0,sum:0,min:Infinity,max:0};
+  const p=_perf[name];p.n++;p.sum+=ms;
+  p.min=Math.min(p.min,ms);p.max=Math.max(p.max,ms);
+  const avg=(p.sum/p.n).toFixed(1);
+  const perfEl=document.getElementById('_dbgPerf');
+  if(perfEl)perfEl.textContent=Object.entries(_perf)
+    .map(([k,v])=>`${k}: avg=${( v.sum/v.n).toFixed(1)}ms min=${v.min} max=${v.max} n=${v.n}`)
+    .join('\n');
+}
+
+// ── §17.4 window.onerror — глобальный перехват ──
+window.onerror=function(msg,src,line,col,err){
+  dbgLog('JS ERR: '+(err&&err.message||msg)+' @'+line+(col?':'+col:''));
+  return true; // не показывать стандартный диалог
+};
+window.onunhandledrejection=function(e){
+  dbgLog('UNHANDLED: '+(e.reason&&e.reason.message||e.reason||'?'));
+};
+
+function toggleDebugPanel(){
+  _debugOpen = !_debugOpen;
+  const panel = document.getElementById('_dbgPanel');
+  const btn   = document.getElementById('debugToggleBtn');
+  if(panel) panel.style.display = _debugOpen ? 'block' : 'none';
+  if(btn)   btn.style.background = _debugOpen ? '#333' : '#1a1a1a';
+  if(!_debugOpen&&panel&&panel._memInterval){clearInterval(panel._memInterval);panel._memInterval=null;}
+  if(_debugOpen){
+    // Показать накопленный лог
+    const logEl=document.getElementById('_dbgLog');
+    if(logEl&&_dbgLog.length){logEl.textContent=_dbgLog.slice(-12).join('\n');logEl.style.display='block';}
+    if(panel&&!panel._memInterval)panel._memInterval=setInterval(()=>dbgUpdateMem(),2000);
+    dbgUpdateMem();
+    // Показать накопленный perf
+    const perfEl=document.getElementById('_dbgPerf');
+    if(perfEl&&Object.keys(_perf).length){
+      perfEl.textContent=Object.entries(_perf)
+        .map(([k,v])=>`${k}: avg=${( v.sum/v.n).toFixed(1)}ms min=${v.min} max=${v.max} n=${v.n}`)
+        .join('\n');
+      perfEl.style.display='block';
+    }
+  }
+}
+
+let _vectorOpen = false;
+let _vectorLastSpots = null;
+let _vectorLastFrame = null;
+
+function toggleHistPanel(){
+  let panel=document.getElementById('_histPanel');
+  const btn=document.getElementById('histDiagBtn');
+  const open=panel&&panel.style.display!=='none';
+  if(open){panel.style.display='none';if(btn)btn.style.background='#1a1a1a';return;}
+  if(!panel){
+    panel=document.createElement('div');panel.id='_histPanel';
+    panel.style.cssText='display:none;position:fixed;top:50%;left:calc(50% - 280px);transform:translateY(-50%);'+
+      'z-index:9997;background:#0d0d12;border:1px solid rgba(255,255,255,0.15);border-radius:8px;'+
+      'box-shadow:0 4px 24px rgba(0,0,0,0.7);padding:8px;';
+    panel.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;'+
+      'color:rgba(255,255,255,0.4);font:10px ui-monospace,monospace;margin-bottom:4px">'+
+      '<span>Гистограмма кадра</span>'+
+      '<span style="cursor:pointer;font-size:14px" onclick="toggleHistPanel()">&times;</span></div>'+
+      '<canvas id="_histCanvas" width="500" height="240" style="display:block;border-radius:4px"></canvas>';
+    document.body.appendChild(panel);
+    makeDraggable(panel, panel.querySelector('div'));
+  }
+  panel.style.display='block';
+  if(btn)btn.style.background='#2a1a3a';
+  // Рисуем текущую гистограмму
+  const r=document.getElementById('resultA');
+  if(r&&r._report&&r._report.frame){
+    const f=r._report.frame;
+    const c=document.getElementById('_histCanvas');
+    if(c)drawFrameHistogramOnCanvas(f.hR,f.hG,f.hB,f.count,c);
+  }
+}
+// ── Диагностика суперспота ───────────────────────────────────────────────────
+function toggleSuperPanel(){
+  let panel=document.getElementById('_superPanel');
+  const btn=document.getElementById('superDiagBtn');
+  const open=panel&&panel.style.display!=='none';
+  if(open){panel.style.display='none';if(btn)btn.style.background='#1a1a1a';return;}
+  if(!panel){
+    panel=document.createElement('div');panel.id='_superPanel';
+    panel.style.cssText='display:none;position:fixed;top:50%;left:calc(50% + 30px);transform:translateY(-50%);'+
+      'z-index:9997;background:#0d0d12;border:1px solid rgba(255,255,255,0.15);border-radius:8px;'+
+      'box-shadow:0 4px 24px rgba(0,0,0,0.7);padding:8px;';
+    panel.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;'+
+      'color:rgba(255,255,255,0.4);font:10px ui-monospace,monospace;margin-bottom:4px;cursor:grab">'+
+      '<span>Диагностика суперспота</span>'+
+      '<span style="cursor:pointer;font-size:14px" onclick="toggleSuperPanel()">&times;</span></div>'+
+      '<canvas id="_superCanvas" width="500" height="240" style="display:block;border-radius:4px"></canvas>'+
+      '<div id="_superInfo" style="font:9px ui-monospace,monospace;color:rgba(255,255,255,0.4);margin-top:4px;min-height:14px"></div>';
+    document.body.appendChild(panel);
+    makeDraggable(panel,panel.querySelector('div'));
+  }
+  panel.style.display='block';
+  if(btn)btn.style.background='#2a1a3a';
+  drawSuperDiag();
+}
+function drawSuperDiag(){
+  const cvs=document.getElementById('_superCanvas');
+  if(!cvs)return;
+  const ctx=cvs.getContext('2d');
+  const W=cvs.width,H=cvs.height;
+  ctx.clearRect(0,0,W,H);ctx.fillStyle='#0d0d12';ctx.fillRect(0,0,W,H);
+  const r=document.getElementById('resultA');
+  const rep=r&&r._report?r._report:null;
+  const ss=rep&&rep.superSpot&&rep.superSpot.valid?rep.superSpot:null;
+  const sp600=rep&&rep.spots&&rep.spots[0]?rep.spots[0]:null;
+  const info=document.getElementById('_superInfo');
+  if(!ss){
+    ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font='13px ui-monospace,monospace';
+    ctx.textAlign='center';ctx.fillText('Нет данных суперспота',W/2,H/2);
+    if(info)info.textContent='';return;
+  }
+  const NBINS=17,BSTEP=15;
+  const bins=Array.from({length:NBINS},(_,i)=>(i*BSTEP)+'-'+(i*BSTEP+BSTEP));
+  // Y-бины суперспота: расширяем из yBins[5] в 17 бинов
+  const ssY5=ss.yBins||[0,0,0,0,0];
+  const ssY=Array.from({length:NBINS},(_,i)=>{const src=Math.min(4,Math.floor(i*BSTEP/50));return Math.round(ssY5[src]/(50/BSTEP));});
+  const ssTotal=ssY.reduce((s,v)=>s+v,0)||1;
+  const p6Y=new Array(NBINS).fill(0);
+  if(sp600&&sp600.patchLarge&&sp600.patchLarge._hR){
+    const hR=sp600.patchLarge._hR,hG=sp600.patchLarge._hG,hB=sp600.patchLarge._hB;
+    for(let i=0;i<256;i++){
+      const cnt=Math.round(((hR[i]||0)+(hG[i]||0)+(hB[i]||0))/3);
+      p6Y[Math.min(NBINS-1,Math.floor(i/BSTEP))]+=cnt;
+    }
+  }
+  const p6Total=p6Y.reduce((s,v)=>s+v,0)||1;
+  const ssP=ssY.map(v=>v/ssTotal*100);
+  const p6P=p6Y.map(v=>v/p6Total*100);
+  const maxP=Math.max(...ssP,...p6P,1);
+  const padL=36,padR=10,padT=22,padB=38;
+  const bw=(W-padL-padR)/NBINS;
+  const barW=bw*0.33;
+  // Заголовок
+  ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='bold 10px ui-monospace,monospace';
+  ctx.textAlign='left';ctx.fillText('Y-распределение нейтральных пикселей',padL,14);
+  // Легенда
+  ctx.fillStyle='rgba(196,127,255,0.85)';ctx.fillRect(W-88,5,9,8);
+  ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='9px ui-monospace,monospace';
+  ctx.textAlign='left';ctx.fillText('Суперспот',W-76,13);
+  ctx.fillStyle='rgba(255,200,80,0.8)';ctx.fillRect(W-88,17,9,8);
+  ctx.fillStyle='rgba(255,255,255,0.5)';ctx.fillText('Спот 600',W-76,25);
+  for(let i=0;i<NBINS;i++){
+    const x=padL+i*bw;
+    const hSS=ssP[i]/maxP*(H-padT-padB);
+    const hP6=p6P[i]/maxP*(H-padT-padB);
+    ctx.fillStyle='rgba(196,127,255,0.85)';
+    ctx.fillRect(x+bw/2-barW-1,H-padB-hSS,barW,hSS);
+    ctx.fillStyle='rgba(255,200,80,0.75)';
+    ctx.fillRect(x+bw/2+1,H-padB-hP6,barW,hP6);
+    if(ssP[i]>0.5){ctx.fillStyle='#c47fff';ctx.font='8px ui-monospace,monospace';ctx.textAlign='center';ctx.fillText(ssP[i].toFixed(0)+'%',x+bw/2-barW/2-1,H-padB-hSS-3);}
+    if(p6P[i]>0.5){ctx.fillStyle='rgba(255,200,80,0.9)';ctx.font='8px ui-monospace,monospace';ctx.textAlign='center';ctx.fillText(p6P[i].toFixed(0)+'%',x+bw/2+barW/2+1,H-padB-hP6-3);}
+    ctx.fillStyle='rgba(255,255,255,0.35)';ctx.font='8px ui-monospace,monospace';ctx.textAlign='center';
+    ctx.fillText(bins[i],x+bw/2,H-padB+11);
+  }
+  ctx.strokeStyle='rgba(255,255,255,0.1)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,H-padB);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(padL,H-padB);ctx.lineTo(W-padR,H-padB);ctx.stroke();
+  const sigNorm=ss.sigR!=null?`σR/Y=${ss.sigR} σG/Y=${ss.sigG} σB/Y=${ss.sigB}`:'';
+  const yMode=ss.yBins?'Y-мода: '+(ss.yBins.indexOf(Math.max(...ss.yBins))*50+25)+'–'+(ss.yBins.indexOf(Math.max(...ss.yBins))*50+75):'';
+  const infoTxt=`count=${ss.count.toLocaleString()}px  σT=${ss.sigma_T}K  ${sigNorm}  ${yMode}`;
+  const p6Info=sp600&&sp600.patchLarge?`Спот600: count=${sp600.patchLarge.count.toLocaleString()}px  med=${sp600.patchLarge.medR}/${sp600.patchLarge.medG}/${sp600.patchLarge.medB}  Y-бины:${p6Y.join('/')}`:'';
+  const ssInfo=`Суперспот: ${infoTxt}  Y-бины:${ssY.join('/')}`;
+  if(info){info.innerHTML=`<span style='user-select:all;cursor:copy' title='Нажмите чтобы скопировать'>${ssInfo}</span>`
+    +(p6Info?`<br><span style='user-select:all;cursor:copy'>${p6Info}</span>`:'');}
+
+}
+// ── makeDraggable — перетаскивание панели за заголовок (touch + mouse) ──
+function makeDraggable(panel, handle){
+  if(!handle)return;
+  if(handle._draggable)return; // C3.1: предотвращаем накопление listeners при повторном вызове
+  handle._draggable=true;
+  let sx=0,sy=0,ox=0,oy=0,dragging=false;
+  function getPos(){
+    const r=panel.getBoundingClientRect();
+    return{x:r.left,y:r.top};
+  }
+  function start(cx,cy){
+    const r0=panel.getBoundingClientRect();
+    const savedL=r0.left,savedT=r0.top;
+    panel.style.transform='none';
+    panel.style.bottom='auto';panel.style.right='auto';
+    panel.style.margin='0';
+    void panel.offsetHeight;
+    panel.style.left=savedL+'px';panel.style.top=savedT+'px';
+    ox=savedL;oy=savedT;sx=cx;sy=cy;
+    dragging=true;
+    handle.style.cursor='grabbing';
+  }
+  function move(cx,cy){
+    if(!dragging)return;
+    const pw=panel.offsetWidth||200,ph=panel.offsetHeight||100;
+    const newL=Math.max(0,Math.min(window.innerWidth-pw,ox+(cx-sx)));
+    const newT=Math.max(0,Math.min(window.innerHeight-ph,oy+(cy-sy)));
+    panel.style.left=newL+'px';
+    panel.style.top=newT+'px';
+  }
+  function end(){ dragging=false; handle.style.cursor='grab'; }
+  handle.style.cursor='grab';handle.style.userSelect='none';
+  handle.addEventListener('mousedown',e=>{start(e.clientX,e.clientY);e.preventDefault();});
+  document.addEventListener('mousemove',e=>{move(e.clientX,e.clientY);});
+  document.addEventListener('mouseup',end);
+  handle.addEventListener('touchstart',e=>{const t=e.touches[0];start(t.clientX,t.clientY);e.preventDefault();},{passive:false});
+  document.addEventListener('touchmove',e=>{if(!dragging)return;const t=e.touches[0];move(t.clientX,t.clientY);e.preventDefault();},{passive:false});
+  document.addEventListener('touchend',end);
+}
+function toggleVectorPanel(){
+  _vectorOpen = !_vectorOpen;
+  const panel = document.getElementById('_vecPanel');
+  const btn   = document.getElementById('vectorDiagBtn');
+  if(panel) panel.style.display = _vectorOpen ? 'block' : 'none';
+  if(btn)   btn.style.background = _vectorOpen ? '#1e2a3a' : '#1a1a1a';
+  if(_vectorOpen && _vectorLastSpots !== null){
+    const c = document.getElementById('_vecCanvas');
+    if(c) drawYCbCrDiag(c, _vectorLastSpots, null, _vectorLastFrame);
+  }
+}
+
+function initVectorPanel(){
+  if(document.getElementById('_vecPanel')) return;
+  const panel = document.createElement('div');
+  panel.id = '_vecPanel';
+  panel.style.cssText = 'display:none;position:fixed;bottom:8px;left:8px;z-index:9998;'+
+    'background:#0d0d12;border-radius:6px;border:1px solid rgba(91,156,246,0.4);'+
+    'box-shadow:0 4px 16px rgba(0,0,0,0.6);padding:6px;';
+  panel.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
+      '<span style="font-size:10px;color:#5b9cf6;font-family:ui-monospace,monospace">◎ YCbCr</span>'+
+      '<button onclick="toggleVectorPanel()" style="background:none;border:none;color:#888;font-size:14px;cursor:pointer;line-height:1;padding:0 2px">&times;</button>'+
+    '</div>'+
+    '<canvas id="_vecCanvas" width="300" height="300" style="display:block;cursor:default"></canvas>'+
+    '<div id="_vecMode" style="font-size:9px;color:#888;text-align:center;margin-top:3px;font-family:ui-monospace,monospace">● споты</div>';
+  document.body.appendChild(panel);
+  makeDraggable(panel, panel.querySelector('div'));
+}
+
+function updateVectorPanel(spots, frameData){
+  _vectorLastSpots = spots;
+  _vectorLastFrame = frameData;
+  if(!_vectorOpen) return;
+  const c = document.getElementById('_vecCanvas');
+  if(c) drawYCbCrDiag(c, spots, null, frameData);
+}
+
+function assertUIState(slotId, state){
+  if(!_debugOpen) return;
+  const el  = id => document.getElementById(id+slotId);
+  const cs  = id => { const e=el(id); return e?getComputedStyle(e):null; };
+  const isHidden  = id => { const s=cs(id); return s&&(s.display==='none'||s.visibility==='hidden'); };
+  const isVisible = id => { const s=cs(id); return s&&s.display!=='none'&&s.visibility!=='hidden'; };
+  const checks = {
+    empty: [
+      [()=>isVisible('creativeCalc'),  'creativeCalc виден'],
+      [()=>isVisible('ph'),            'placeholder виден'],
+      [()=>isVisible('spotRow'),       'spotRow виден (всегда)'],
+      [()=>isHidden('spotHist'),       'spotHist скрыт'],
+      [()=>!el('canvas')?.classList.contains('loading'), 'canvas без blur'],
+    ],
+    loading: [
+      [()=>isHidden('creativeCalc'),   'creativeCalc скрыт'],
+      [()=>isHidden('ph'),             'placeholder скрыт'],
+      [()=>isVisible('spotRow'),       'spotRow виден (всегда)'],
+      [()=>isHidden('spotHist'),       'spotHist скрыт'],
+      [()=>el('canvas')?.classList.contains('loading'), 'canvas blur'],
+      [()=>{const s=cs('progressOverlay');return s&&s.display==='flex';}, 'overlay показан'],
+    ],
+    loaded: [
+      [()=>isHidden('creativeCalc'),   'creativeCalc скрыт'],
+      [()=>isHidden('ph'),             'placeholder скрыт'],
+      [()=>isVisible('spotRow'),       'spotRow виден'],
+      [()=>!el('canvas')?.classList.contains('loading'), 'canvas без blur'],
+    ],
+  };
+  const list = checks[state]||[];
+  list.forEach(([fn, label])=>{
+    try{
+      if(!fn()) console.warn(`[UIAssert] ${slotId} ${state}: FAIL — ${label}`);
+      else       console.log (`[UIAssert] ${slotId} ${state}: ok  — ${label}`);
+    }catch(e){ console.error(`[UIAssert] ${slotId} ${state}: ERR — ${label}`, e); }
+  });
+  if(state==='loaded') assertUIContent(slotId);
+}
+
+function assertUIContent(slotId){
+  if(!_debugOpen) return;
+  const dbgOut = document.getElementById('_dbgOut');
+  if(dbgOut){ dbgOut.textContent='[Audit]\n'; dbgOut.style.display='block'; }
+  let fails=[], warns=[];
+  const log = (ok, label, isWarn) => {
+    const line = (ok?'✓ ':'✗ ')+label;
+    if(!ok){ if(isWarn) warns.push(label); else fails.push(label); }
+    if(ok) console.log('[UIContent] ok  — '+label);
+    else   console.warn('[UIContent] FAIL — '+label);
+    if(dbgOut) dbgOut.textContent += line+'\n';
+  };
+  const el = id => document.getElementById(id+slotId);
+  const check = (label, fn, isWarn) => {
+    try{ log(fn(), label, isWarn); }
+    catch(e){ log(false, label+' ERR:'+e.message, isWarn); }
+  };
+  const exif = el('exifInfo');
+  check('exifInfo не пустой', ()=> exif && exif.textContent.trim().length > 0);
+  const result = el('result');
+  check('result существует', ()=> !!result);
+  check('result не пустой', ()=> result && result.textContent.trim().length > 0);
+  const table = document.getElementById('table'+slotId);
+  check('table существует', ()=> !!table);
+  const hist = el('spotHist');
+  if(hist && getComputedStyle(hist).display !== 'none'){
+    const hasCanvas = hist.querySelector('canvas') !== null;
+    if(dbgOut) dbgOut.textContent += (hasCanvas?'✓':'ℹ')+' spotHist canvas: '+(hasCanvas?'есть':'нет (спот не выбран)')+'\n';
+  }
+  // summary
+  if(dbgOut){
+    dbgOut.textContent += '─────────────────────\n';
+    if(fails.length===0 && warns.length===0){
+      dbgOut.textContent += '✅ Всё OK\n';
+    } else {
+      if(fails.length) dbgOut.textContent += '🔴 Проблема: '+fails.join(', ')+'\n';
+      if(warns.length) dbgOut.textContent += '⚠️  Внимание: '+warns.join(', ')+'\n';
+    }
+  }
+}
+
+function dumpUIState(slotId){
+  const ids = ['creativeCalc','ph','canvas','circles','spotRow','spotHist',
+               'autoBtn','result','table','exifInfo','progressOverlay'];
+  const lines = [`=== dumpUIState ${slotId} @ ${new Date().toISOString()} ===`,
+                 `state: ${document.body.dataset['state'+slotId]||'?'}`];
+  ids.forEach(id=>{
+    const e = document.getElementById(id+slotId);
+    if(!e){ lines.push(`  #${id}${slotId}: NOT FOUND`); return; }
+    const cs = getComputedStyle(e);
+    lines.push(`  #${id}${slotId}: display=${cs.display} visibility=${cs.visibility} classList=[${e.classList}]`);
+  });
+  const dump = lines.join('\n');
+  console.log(dump);
+  // clipboard намеренно не вызывается — вызывает диалог разрешений на iOS
+  // показать в панели
+  const dbgOut = document.getElementById('_dbgOut');
+  if(dbgOut){
+    dbgOut.textContent = dump;
+    dbgOut.style.display='block';
+    const notFound = lines.filter(l=>l.includes('NOT FOUND')).length;
+    const hidden   = lines.filter(l=>l.includes('display=none')).length;
+    const state    = document.body.dataset['state'+slotId]||'?';
+    dbgOut.textContent += '\n─────────────────────\n';
+    if(notFound===0 && hidden<=6)
+      dbgOut.textContent += '✅ state='+state+' · все элементы найдены\n';
+    else
+      dbgOut.textContent += (notFound?'🔴 NOT FOUND: '+notFound+'\n':'')+
+                            (hidden>6?'⚠️ скрыто: '+lines.filter(l=>l.includes('display=none')).map(l=>l.trim().split(':')[0].replace('#','')).join(', ')+'\n':'');
+  }
+  return dump;
+}
+
+let _tourTimers=[];
+function autoTour(slotId){
+  // очистка при повторном вызове — race condition guard
+  _tourTimers.forEach(id=>clearTimeout(id));
+  _tourTimers=[];
+  const _t=(fn,ms)=>{const id=setTimeout(fn,ms);_tourTimers.push(id);return id;};
+  const dbgOut = document.getElementById('_dbgOut');
+  if(dbgOut){ dbgOut.textContent=''; dbgOut.style.display='block'; }
+  const t0=performance.now();
+  const log=(msg)=>{
+    const ms=(performance.now()-t0).toFixed(0);
+    const line='[AutoTour +'+ms+'ms] '+msg;
+    console.log(line);
+    if(dbgOut){dbgOut.style.display='block';dbgOut.textContent+=line+'\n';}
+  };
+  const withFile=typeof _fileLoaded_A!=='undefined'&&_fileLoaded_A;
+  log('старт · '+(withFile?'файл загружен':'без файла'));
+
+  // 1. empty
+  log('1/7 → empty');
+  setUIState(slotId,'empty');
+
+  _t(()=>{
+    // 2. loading
+    log('2/7 → loading');
+    setUIState(slotId,'loading');
+    updateProgress(slotId,40,'Auto-Tour...');
+  },800);
+
+  _t(()=>{
+    // 3. loaded
+    log('3/7 → loaded');
+    updateProgress(slotId,100,'');
+    setUIState(slotId,'loaded');
+  },2500);
+
+  _t(()=>{
+    // 3а–3в: только если файл загружен
+    if(withFile){
+      const t1=performance.now();
+      try{
+        runAutoSpots&&runAutoSpots();
+        log('3а → autoSpots ('+(performance.now()-t1).toFixed(0)+'ms)'+
+          (window._lastSpots&&window._lastSpots[0]?' score='+Math.round(window._lastSpots[0].score):''));
+      }catch(e){log('3а ❌ autoSpots: '+e.message);}
+      // 3б superSpot
+      const r=document.getElementById('result'+slotId);
+      if(r&&r._report&&r._report.superSpot){
+        const ss=r._report.superSpot;
+        log('3б → superSpot valid='+ss.valid+(ss.valid?' count='+ss.count+' σT='+ss.sigma_T+'K':''));
+      } else { log('3б → superSpot: нет данных в _report'); }
+      // 3в таблица
+      const tbl=document.getElementById('table'+slotId);
+      const len=tbl?tbl.innerHTML.length:0;
+      log('3в → таблица: '+(len>0?len+' символов ✓':'пустая ❌'));
+    }
+  },3200);
+
+  _t(()=>{
+    // 4. Вектор open
+    const t4=performance.now();
+    try{
+      toggleVectorPanel();
+      const cv=document.getElementById('_vecCanvas');
+      log('4/7 → Вектор open ('+(performance.now()-t4).toFixed(0)+'ms) canvas='+
+        (cv?cv.width+'×'+cv.height:'❌ не найден')+
+        (withFile?'':' · масштаб не проверить — нет данных'));
+    }catch(e){log('4/7 ❌ Вектор: '+e.message);}
+  },withFile?4200:3200);
+
+  _t(()=>{
+    // 5. Гист open
+    const t5=performance.now();
+    try{
+      toggleHistPanel();
+      const ch=document.getElementById('_histCanvas');
+      log('5/7 → Гист open ('+(performance.now()-t5).toFixed(0)+'ms) canvas='+
+        (ch?ch.width+'×'+ch.height:'❌ не найден'));
+    }catch(e){log('5/7 ❌ Гист: '+e.message);}
+  },withFile?5000:4000);
+
+  _t(()=>{
+    // 6. Закрыть панели
+    const vp=document.getElementById('_vecPanel');
+    const hp=document.getElementById('_histPanel');
+    if(vp&&vp.style.display!=='none') toggleVectorPanel();
+    if(hp&&hp.style.display!=='none') toggleHistPanel();
+    log('6/7 → панели закрыты ✓');
+  },withFile?5800:4800);
+
+  _t(()=>{
+    // 7. Финал
+    log('7/7 → сброс');
+    resetSlot(slotId);
+    setTimeout(()=>{
+      const ms=(performance.now()-t0).toFixed(0);
+      log('✅ Auto-Tour завершён за '+ms+'ms');
+    },100);
+  },withFile?6800:5800);
+}
+
+function dbgUpdateMem(){
+  const memEl=document.getElementById('_dbgMem');
+  if(!memEl)return;
+  const lines=[];
+  // Наши объекты — честнее чем JS heap
+  const pc=document.getElementById('photoCanvasA');
+  const normMB=pc&&pc._normW&&pc._normH?Math.round(pc._normW*pc._normH*4/1048576):0;
+  const dispMB=pc?Math.round((pc.width||0)*(pc.height||0)*4/1048576):0;
+  const iiMB=window._iiSize?Math.round(window._iiSize/1048576):0;
+  const totalMB=normMB+dispMB+iiMB;
+  const clr=totalMB>200?'#f66':totalMB>100?'#fa6':'#f9a';
+  memEl.style.color=clr;
+  lines.push(`norm:${normMB}MB disp:${dispMB}MB ii:${iiMB}MB итого:~${totalMB}MB`);
+  const canvases=document.querySelectorAll('canvas');
+  lines.push(`canvas в DOM: ${canvases.length}`);
+  memEl.textContent=lines.join('\n');
+}
+function dbgCopyAll(){
+  const btn=document.getElementById('_dbgCopyBtn');
+  const state=document.getElementById('_dbgState');
+  const log=document.getElementById('_dbgLog');
+  const out=document.getElementById('_dbgOut');
+  const perf=document.getElementById('_dbgPerf');
+  const lines=[
+    '=== WB DIAG DEBUG DUMP ===',
+    'STATE: '+(state?state.textContent:'?'),
+    '',
+    '--- EVENT LOG ---',
+    _dbgLog.join('\n')||'(пусто)',
+    '',
+    '--- AUTO-TOUR / DUMP ---',
+    (out?out.textContent:'')||'(пусто)',
+    '',
+    '--- ПАМЯТЬ ---',
+    (document.getElementById('_dbgMem')?document.getElementById('_dbgMem').textContent:'')||'(нет данных)',
+    '',
+    '--- PERF ---',
+    (perf?perf.textContent:'')||'(пусто)',
+    '=========================',
+  ];
+  const text=lines.join('\n');
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(text)
+      .then(()=>{if(btn){btn.textContent='✓ ok';setTimeout(()=>btn.textContent='⎘ copy',1500);}})
+      .catch(()=>{if(btn)btn.textContent='❌ err';});
+  } else {
+    // fallback: выделить текст в _dbgLog
+    if(btn)btn.textContent='no API';
+  }
+}
+
+function initDebugPanel(){
+  const panel = document.createElement('div');
+  panel.id = '_dbgPanel';
+  panel.style.cssText = 'display:none;position:fixed;bottom:8px;right:8px;z-index:9999;'+
+    'background:rgba(0,0,0,0.9);color:#0f0;font:17px monospace;padding:12px;'+
+    'border-radius:6px;border:1px solid #0f0;width:440px;';
+  panel.innerHTML =
+    `<div id="_dbgHdr" style="color:#ff0;margin-bottom:4px;font-size:13px;cursor:grab;display:flex;justify-content:space-between;align-items:center">` +
+    `<span>⚙ DEBUG PANEL <span style="color:#888;font-size:9px">${CONFIG.APP_VERSION}</span></span>`+
+    `<span style="display:flex;gap:4px">`+
+      `<button id="_dbgCopyBtn" onclick="dbgCopyAll()" `+
+        `style="background:#222;border:1px solid #555;color:#aaa;font-size:10px;padding:1px 5px;border-radius:3px;cursor:pointer" title="Копировать всё для чата">⎘ copy</button>`+
+      `<button onclick="toggleDebugPanel()" style="background:none;border:none;color:#888;font-size:16px;cursor:pointer;line-height:1;padding:0 2px" title="Закрыть">×</button>`+
+    `</span>`+
+    `</div>`+
+    `<div style="font-size:8px;color:#888;margin-bottom:6px;line-height:1.6">`+
+      `<span style="color:#0f0">▶ Auto-Tour</span> — прогоняет empty→loading→loaded→empty, в конце дамп<br>`+
+      `<span style="color:#0f0">Dump</span> — display/visibility всех ключевых элементов → в панель<br>`+
+      `<span style="color:#0f0">Content</span> — проверяет EXIF·K·result·table·spotHist после загрузки`+
+    `</div>`+
+    `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">`+
+      `<button onclick="autoTour('A')" style="padding:2px 6px;font-size:9px">▶ Auto-Tour</button>`+
+      `<button onclick="dumpUIState('A')" style="padding:2px 6px;font-size:9px">Dump</button>`+
+      `<button onclick="assertUIContent('A')" style="padding:2px 6px;font-size:9px">Content</button>`+
+      `<button onclick="dbgUpdateMem()" style="padding:2px 6px;font-size:9px;color:#f9a">Mem ↺</button>`+
+    `</div>`+
+    `<div id="_dbgState" style="font-size:11px;color:#aaa;margin-bottom:4px;min-height:16px"></div>`+
+    `<div style="color:#ff0;font-size:8px;margin-bottom:2px">ПАМЯТЬ</div>`+
+    `<pre id="_dbgMem" style="display:block;font-size:10px;color:#f9a;height:32px;overflow:auto;margin:0 0 4px;white-space:pre-wrap;flex-shrink:0">— нет данных —</pre>`+
+    `<pre id="_dbgOut" style="display:block;font-size:10px;color:#cfc;height:110px;overflow:auto;margin:0 0 4px;white-space:pre-wrap;flex-shrink:0">— нет данных —</pre>`+
+    `<div style="color:#ff0;font-size:8px;margin-top:6px;margin-bottom:2px">EVENT LOG</div>`+
+    `<pre id="_dbgLog" style="display:block;font-size:10px;color:#aaf;height:80px;overflow:auto;margin:0 0 4px;white-space:pre-wrap;flex-shrink:0">— лог пуст —</pre>`+
+    `<div style="color:#ff0;font-size:8px;margin-top:6px;margin-bottom:2px">PERF</div>`+
+    `<pre id="_dbgPerf" style="display:block;font-size:10px;color:#ffa;height:55px;overflow:auto;margin:0;white-space:pre-wrap;flex-shrink:0">— нет данных —</pre>`;
+  document.body.appendChild(panel);
+  makeDraggable(panel, document.getElementById('_dbgHdr'));
+  setInterval(()=>{
+    const s = document.getElementById('_dbgState');
+    if(s) s.textContent = `${CONFIG.APP_VERSION} | stateA=${document.body.dataset.stateA||'?'} | hash=${location.hash||'—'}`;
+    dbgUpdateMem();
+    const perfEl=document.getElementById('_dbgPerf');
+    if(perfEl&&Object.keys(_perf).length)perfEl.style.display='block';
+    const logEl=document.getElementById('_dbgLog');
+    if(logEl&&_dbgLog.length)logEl.style.display='block';
+  }, 300);
+}
+
+function updateProgress(slotId, percent, message) {
+  const overlay = document.getElementById('progressOverlay' + slotId);
+  const label   = document.getElementById('progressLabel'  + slotId);
+  const pctEl   = document.getElementById('progressPct'    + slotId);
+  if (!overlay) return;
+  if (percent >= 100) {
+    if (_progressTimers[slotId]) clearTimeout(_progressTimers[slotId]);
+    _progressTimers[slotId] = setTimeout(() => {
+      overlay.style.display = 'none';
+      delete _progressTimers[slotId];
+    }, 400);
+  } else {
+    overlay.style.display = 'flex';
+  }
+  if (pctEl) pctEl.textContent = percent < 100 ? Math.round(percent)+'%' : '';
+  if (label) label.textContent = message || '';
+}
+
+// ═══════════════════════════════════════════════════
+// EXIF — parser (Canon MakerNote, Apple, IFD0)
+// ═══════════════════════════════════════════════════
+// ── IFD0: Make, Model, Orientation, ExifIFD pointer ──────────────────────────
+function _parseIFD0(r16,r32,str,res){
+  let exifPtr=null;
+  try{
+    const i0=r32(4),n0=r16(i0);
+    for(let i=0;i<n0;i++){
+      const e=i0+2+i*12,t=r16(e);
+      if(t===0x010F)res.make=str(e);
+      if(t===0x0110)res.model=str(e);
+      if(t===0x0112)res.orientation=r16(e+8);
+      if(t===0x0132)res.dateTime=str(e);
+      if(t===0x8769)exifPtr=r32(e+8);
+    }
+  }catch{}
+  return exifPtr;
+}
+// ── ExifIFD: ISO, WBMode, LensModel, DigitalZoom, MakerNote pointer ──────────
+function _parseExifIFD(r16,r32,str,rat,res,exifPtr){
+  let mOff=null;
+  try{
+    const n1=r16(exifPtr);
+    for(let i=0;i<n1;i++){
+      const e=exifPtr+2+i*12,t=r16(e);
+      if(t===0x927C)mOff=r32(e+8);
+      if(t===0x8827)res.iso=r16(e+8);
+      if(t===0xA403)res.wbMode=r16(e+8);
+      if(t===0xA434)res.lensModel=str(e);
+      if(t===0xA404)res.digitalZoom=rat(e);
+      if(t===0x829A){const v=rat(e);res.exposureTime=v!=null?(v<1?'1/'+ Math.round(1/v):v.toFixed(1)):null;}
+      if(t===0x829D)res.fNumber=rat(e);
+      if(t===0x920A)res.focalLength=rat(e);
+      if(t===0x9204){const o=ts+r32(e+8);const n=r32(o),d=r32(o+4);res.exposureBias=d?(n/d):0;}
+      if(t===0x9209)res.flash=r16(e+8);
+      if(t===0x9207)res.meteringMode=r16(e+8);
+    }
+  }catch{}
+  return mOff;
+}
+// ── Canon MakerNote: ColorTemp, WBShiftAB, WBShiftGM (R12.2) ─────────────────
+function _parseCanonMakerNote(r16,r32,rs16,res,mOff){
+  try{
+    const mn=r16(mOff);
+    for(let i=0;i<Math.min(mn,100);i++){
+      const e=mOff+2+i*12,t=r16(e),cnt=r32(e+4);
+      if(t===0x00a0&&cnt>=14){
+        const d=cnt*2>4?r32(e+8):(e+8);
+        res.colorTemp=rs16(d+9*2);
+        res.wbShiftBA=rs16(d+12*2);
+        res.wbShiftMG=rs16(d+13*2);
+      }
+    }
+  }catch{res.error='Canon MakerNote повреждён';}
+}
+async function parseExif(file){
+  const res={make:null,model:null,orientation:1,iso:null,wbMode:null,
+    colorTemp:null,wbShiftBA:null,wbShiftMG:null,lensModel:null,digitalZoom:null,
+    exposureTime:null,fNumber:null,focalLength:null,exposureBias:null,flash:null,meteringMode:null,dateTime:null,error:null};
+  let buf;
+  try{buf=await file.slice(0,CONFIG.EXIF.BUF_SIZE).arrayBuffer();}catch{return null;}
+  const v=new DataView(buf);
+  // Find TIFF start inside APP1/EXIF marker (FF E1 ... "Exif")
+  let ts=null;
+  try{
+    let off=2;
+    while(off<buf.byteLength-10){
+      if(v.getUint8(off)===0xFF&&v.getUint8(off+1)===0xE1){
+        const s=new Uint8Array(buf,off+4,4);
+        if(s[0]===0x45&&s[1]===0x78&&s[2]===0x69&&s[3]===0x66){ts=off+10;break;}
+      }
+      const l=v.getUint16(off+2,false);if(l<2)break;off+=2+l;
+    }
+  }catch{}
+  if(ts===null){res.error='EXIF не найден';return res;}
+  const le=v.getUint8(ts)===0x49; // little-endian flag
+  const r16=o=>v.getUint16(ts+o,le);
+  const r32=o=>v.getUint32(ts+o,le);
+  const rs16=o=>v.getInt16(ts+o,le);
+  function str(e){
+    const cnt=r32(e+4),o=cnt>4?r32(e+8):(e+8);
+    let s='';
+    for(let i=0;i<cnt-1;i++){const ch=v.getUint8(ts+o+i);if(!ch)break;s+=String.fromCharCode(ch);}
+    return s.trim();
+  }
+  function rat(e){const o=ts+r32(e+8),d=r32(o+4);return d?r32(o)/d:null;}
+  const exifPtr=_parseIFD0(r16,r32,str,res);
+  if(!exifPtr)return res;
+  const mOff=_parseExifIFD(r16,r32,str,rat,res,exifPtr);
+  if(res.make==='Canon'&&mOff!==null)
+    _parseCanonMakerNote(r16,r32,rs16,res,mOff);
+  return res;
+}
+// ═══════════════════════════════════════════════════
+// IMAGE — load, orient, sample
+// ═══════════════════════════════════════════════════
+async function loadImg(file){
+  // new Image() via URL — надёжнее чем createImageBitmap на всех платформах
+  return new Promise((res,rej)=>{
+    const i=new Image();
+    const url=URL.createObjectURL(file);
+    const t=setTimeout(()=>{URL.revokeObjectURL(url);rej(new Error('Таймаут загрузки изображения'));},15000);
+    i.onload=()=>{clearTimeout(t);URL.revokeObjectURL(url);res(i);};
+    i.onerror=()=>{clearTimeout(t);URL.revokeObjectURL(url);rej(new Error('Ошибка загрузки'));};
+    i.src=url;
+  });
+}
+// makeNormCanvas: полноразмерный canvas с поворотом — только для sampleBoth
+function makeNormCanvas(img){
+  const nW=img.naturalWidth??img.width, nH=img.naturalHeight??img.height;
+  const c=document.createElement('canvas');
+  if(nW>nH){
+    c.width=nH; c.height=nW;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.translate(c.width,0); x.rotate(Math.PI/2); x.drawImage(img,0,0);
+  } else {
+    c.width=nW; c.height=nH;
+    c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0);
+  }
+  return c;
+}
+function histMedian(h,total){
+  let acc=0,half=total/2;
+  for(let i=0;i<256;i++){acc+=h[i];if(acc>=half)return i;}
+  return 255;
+}
+function histMean(h,total){
+  let s=0;for(let i=0;i<256;i++)s+=i*h[i];return s/total;
+}
+function histSigma(h,total,mean){
+  let s=0;for(let i=0;i<256;i++)s+=h[i]*(i-mean)*(i-mean);return Math.sqrt(s/total);
+}
+// Trimmed mean 5%-95%: устойчивее медианы при шуме, использует больше данных
+function histTrimmedMean(h,total){
+  if(!total)return 0;
+  const skip=Math.round(total*0.05);
+  const end=total-skip;
+  let count=0,sum=0,included=0;
+  for(let i=0;i<256;i++){
+    const n=h[i];
+    if(!n){count+=0;continue;}
+    // сколько пикселей из этого бина попадает в диапазон [skip+1 .. end]
+    const lo=count,hi=count+n; // [lo, hi) позиции
+    const inLo=Math.max(lo,skip);
+    const inHi=Math.min(hi,end);
+    if(inHi>inLo){sum+=i*(inHi-inLo);included+=(inHi-inLo);}
+    count+=n;
+  }
+  return included>0?sum/included:histMean(h,total);
+}
+// histSigmaTrim: σ-trim — оставляем пиксели в [mean-2σ, mean+2σ], пересчёт mean
+// O(256) по гистограмме = O(1) от числа пикселей. Точнее percentile-trim на неравномерных распределениях.
+function histSigmaTrim(h, total){
+  if(!total)return 0;
+  const mean=histMean(h,total);
+  const sigma=histSigma(h,total,mean);
+  const lo=Math.max(0,Math.floor(mean-2*sigma));
+  const hi=Math.min(255,Math.ceil(mean+2*sigma));
+  let sum=0,n=0;
+  for(let i=lo;i<=hi;i++){sum+=i*h[i];n+=h[i];}
+  return n>0?sum/n:mean;
+}
+// sampleBoth: один проход по r=300, p250 из той же маски (R7.9)
+// Два canvas из пула — без аллокаций при каждом клике
+const _patchPool={c600:null,cDrag:null};
+function _getPoolCanvas(){
+  if(!_patchPool.c600){
+    _patchPool.c600=document.createElement('canvas');
+    _patchPool.c600.width=_patchPool.c600.height=CONFIG.PATCH.R_LARGE*2;
+    _patchPool.c600.getContext('2d',{willReadFrequently:true});
+  }
+  return _patchPool.c600;
+}
+function _getDragCanvas(){
+  // Б4.1: фиксированный размер R_LARGE*2 — нет ресайза на каждый mousemove
+  if(!_patchPool.cDrag){
+    _patchPool.cDrag=document.createElement('canvas');
+    _patchPool.cDrag.width=_patchPool.cDrag.height=CONFIG.PATCH.R_LARGE*2;
+    _patchPool.cDrag.getContext('2d',{willReadFrequently:true});
+  }
+  return _patchPool.cDrag;
+}
+function makePatchResult(hR,hG,hB,count){
+  if(!count)return{meanR:0,meanG:0,meanB:0,medR:0,medG:0,medB:0,trimR:0,trimG:0,trimB:0,sigTrimR:0,sigTrimG:0,sigTrimB:0,sigmaR:0,sigmaG:0,sigmaB:0,count:0};
+  const meanR=histMean(hR,count),meanG=histMean(hG,count),meanB=histMean(hB,count);
+  return{meanR:Math.round(meanR),meanG:Math.round(meanG),meanB:Math.round(meanB),
+    medR:histMedian(hR,count),medG:histMedian(hG,count),medB:histMedian(hB,count),
+    trimR:Math.round(histTrimmedMean(hR,count)),trimG:Math.round(histTrimmedMean(hG,count)),trimB:Math.round(histTrimmedMean(hB,count)),
+    sigTrimR:Math.round(histSigmaTrim(hR,count)),sigTrimG:Math.round(histSigmaTrim(hG,count)),sigTrimB:Math.round(histSigmaTrim(hB,count)),
+    sigmaR:histSigma(hR,count,meanR),sigmaG:histSigma(hG,count,meanG),sigmaB:histSigma(hB,count,meanB),
+    _hR:hR,_hG:hG,_hB:hB,count};
+}
+// sampleBothR: sampleBoth с кастомным большим радиусом (для drag по disp)
+function sampleBothR(canvas,cx,cy,rl){
+  const rs=Math.round(rl*(CONFIG.PATCH.R_SMALL/CONFIG.PATCH.R_LARGE));
+  const d=rl*2,off=_getDragCanvas(); // Б4.1: без ресайза — pool всегда R_LARGE*2
+  off.getContext('2d').drawImage(canvas,cx-rl,cy-rl,d,d,0,0,d,d);
+  const data=off.getContext('2d').getImageData(0,0,d,d).data;
+  const hR6=new Int32Array(256),hG6=new Int32Array(256),hB6=new Int32Array(256);
+  const hR2=new Int32Array(256),hG2=new Int32Array(256),hB2=new Int32Array(256);
+  const r6sq=rl*rl,r2sq=rs*rs;let c6=0,c2=0;
+  for(let dy=0;dy<d;dy++)for(let dx=0;dx<d;dx++){
+    const ddx=dx-rl,ddy=dy-rl,dist2=ddx*ddx+ddy*ddy;
+    if(dist2>r6sq)continue;
+    const i=(dy*d+dx)*4;
+    hR6[data[i]]++;hG6[data[i+1]]++;hB6[data[i+2]]++;c6++;
+    if(dist2<=r2sq){hR2[data[i]]++;hG2[data[i+1]]++;hB2[data[i+2]]++;c2++;}
+  }
+  return{p250:makePatchResult(hR2,hG2,hB2,c2),p600:makePatchResult(hR6,hG6,hB6,c6)};
+}
+function sampleBoth(canvas,cx,cy){
+  const rl=CONFIG.PATCH.R_LARGE,rs=CONFIG.PATCH.R_SMALL;
+  const d=rl*2,off=_getPoolCanvas();
+  off.getContext('2d').drawImage(canvas,cx-rl,cy-rl,d,d,0,0,d,d);
+  const data=off.getContext('2d').getImageData(0,0,d,d).data;
+  const hR6=new Int32Array(256),hG6=new Int32Array(256),hB6=new Int32Array(256);
+  const hR2=new Int32Array(256),hG2=new Int32Array(256),hB2=new Int32Array(256);
+  const r6sq=rl*rl, r2sq=rs*rs;
+  let c6=0,c2=0;
+  for(let dy=0;dy<d;dy++)for(let dx=0;dx<d;dx++){
+    const ddx=dx-rl,ddy=dy-rl,dist2=ddx*ddx+ddy*ddy;
+    if(dist2>r6sq)continue;
+    const i=(dy*d+dx)*4;
+    hR6[data[i]]++;hG6[data[i+1]]++;hB6[data[i+2]]++;c6++;
+    if(dist2<=r2sq){hR2[data[i]]++;hG2[data[i+1]]++;hB2[data[i+2]]++;c2++;}
+  }
+  return{
+    p250:makePatchResult(hR2,hG2,hB2,c2),
+    p600:makePatchResult(hR6,hG6,hB6,c6)
+  };
+}
+function makeDispCanvas(img,maxPx=CONFIG.DISP.MAX_PX){
+  // Рисует img напрямую с поворотом и масштабом — один drawImage вместо двух
+  const nW=img.naturalWidth??img.width, nH=img.naturalHeight??img.height;
+  const needRot=nW>nH;
+  const srcW=needRot?nH:nW, srcH=needRot?nW:nH;
+  const scale=Math.min(1,maxPx/Math.max(srcW,srcH));
+  const dW=Math.round(srcW*scale), dH=Math.round(srcH*scale);
+  const c=document.createElement('canvas');
+  c.width=dW; c.height=dH;
+  const x=c.getContext('2d',{willReadFrequently:true});
+  if(needRot){
+    x.translate(dW,0); x.rotate(Math.PI/2);
+    x.drawImage(img,0,0,nW,nH,0,0,dH,dW);
+  } else {
+    x.drawImage(img,0,0,nW,nH,0,0,dW,dH);
+  }
+  return c;
+}
+async function sampleWholeFrame(canvas,onChunk){
+  const W=canvas.width,H=canvas.height;
+  const hR=new Int32Array(256),hG=new Int32Array(256),hB=new Int32Array(256);
+  let over=0,under=0,total=0;
+  const chunks=10,chunkH=Math.ceil(H/chunks);
+  const ctx2d=canvas.getContext('2d'); // O3: вынесен из цикла
+  for(let ci=0;ci<chunks;ci++){
+    const y0=ci*chunkH,y1=Math.min(y0+chunkH,H);
+    const data=ctx2d.getImageData(0,y0,W,y1-y0).data;
+    for(let i=0;i<data.length;i+=4){
+      hR[data[i]]++;hG[data[i+1]]++;hB[data[i+2]]++;total++;
+      if(data[i]>CONFIG.WARN.OVEREXPOSE||data[i+1]>CONFIG.WARN.OVEREXPOSE||data[i+2]>CONFIG.WARN.OVEREXPOSE)over++;
+      if((data[i]+data[i+1]+data[i+2])/3<CONFIG.WARN.UNDEREXPOSE)under++;
+    }
+    if(onChunk)onChunk(ci+1);
+    await new Promise(r=>setTimeout(r,16));
+  }
+  const meanR=Math.round(histMean(hR,total)),meanG=Math.round(histMean(hG,total)),meanB=Math.round(histMean(hB,total));
+  if(!total)return{medR:0,medG:0,medB:0,meanR:0,meanG:0,meanB:0,trimR:0,trimG:0,trimB:0,sigTrimR:0,sigTrimG:0,sigTrimB:0,sigmaR:0,sigmaG:0,sigmaB:0,overPct:'0.0',underPct:'0.0',hR,hG,hB,count:0};
+  return{
+    medR:histMedian(hR,total),medG:histMedian(hG,total),medB:histMedian(hB,total),
+    meanR,meanG,meanB,
+    trimR:Math.round(histTrimmedMean(hR,total)),trimG:Math.round(histTrimmedMean(hG,total)),trimB:Math.round(histTrimmedMean(hB,total)),
+    sigTrimR:Math.round(histSigmaTrim(hR,total)),sigTrimG:Math.round(histSigmaTrim(hG,total)),sigTrimB:Math.round(histSigmaTrim(hB,total)),
+    sigmaR:histSigma(hR,total,meanR),sigmaG:histSigma(hG,total,meanG),sigmaB:histSigma(hB,total,meanB),
+    overPct:(over/total*100).toFixed(1),underPct:(under/total*100).toFixed(1),
+    hR,hG,hB,count:total
+  };
+}
+// ═══════════════════════════════════════════════════
+// UI — coords, drawing, histograms
+// ═══════════════════════════════════════════════════
+function toOrig(ox,oy,el,oW,oH){
+  const dW=el.clientWidth,dH=el.clientHeight,sc=Math.min(dW/oW,dH/oH);
+  const iW=oW*sc,iH=oH*sc,pX=(dW-iW)/2,pY=(dH-iH)/2;
+  if(ox<pX||ox>pX+iW||oy<pY||oy>pY+iH)return null;
+  return{x:Math.round((ox-pX)/sc),y:Math.round((oy-pY)/sc)};
+}
+function toScr(x,y,el,oW,oH){
+  const dW=el.clientWidth,dH=el.clientHeight,sc=Math.min(dW/oW,dH/oH);
+  return{x:(dW-oW*sc)/2+x*sc,y:(dH-oH*sc)/2+y*sc};
+}
+function drawArcText(ctx,text,cx,cy,r){
+  ctx.save();ctx.font='bold 33px ui-monospace,SF Mono,monospace';ctx.textAlign='center';ctx.textBaseline='bottom';
+  const totalAngle=text.length*0.18,startAngle=-Math.PI/2-totalAngle/2;
+  ctx.shadowColor='rgba(0,0,0,0.8)';ctx.shadowBlur=4;
+  for(let i=0;i<text.length;i++){
+    const angle=startAngle+(i+0.5)*0.22;
+    ctx.save();ctx.translate(cx+r*Math.cos(angle),cy+r*Math.sin(angle));
+    ctx.rotate(angle+Math.PI/2);ctx.fillText(text[i],0,0);ctx.restore();
+  }
+  ctx.restore();
+}
+// Score по нижнему полукругу r600 — буквы читаются снаружи окружности
+function drawArcScore(ctx,text,cx,cy,r,col){
+  ctx.save();
+  ctx.font='bold 22px ui-monospace,SF Mono,monospace';
+  ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.fillStyle=col;
+  ctx.shadowColor='rgba(0,0,0,0.9)';ctx.shadowBlur=5;
+  const charStep=0.20;
+  const totalAngle=(text.length-1)*charStep;
+  const startAngle=Math.PI/2+totalAngle/2;
+  const rOut=r+6;
+  for(let i=0;i<text.length;i++){
+    const angle=startAngle-i*charStep;
+    ctx.save();
+    ctx.translate(cx+rOut*Math.cos(angle),cy+rOut*Math.sin(angle));
+    ctx.rotate(angle-Math.PI/2);
+    ctx.fillText(text[i],0,0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawCircles(slotId,spots,oW,oH){
+  const ov=document.getElementById('circles'+slotId);
+  // Б3.1: размеры ov уже заданы в loadSlot (disp.width/height) — не менять здесь
+  // sp.cx/cy и r250/r600 — в disp-пространстве, рисуем напрямую без toScr
+  const ctx=ov.getContext('2d');ctx.clearRect(0,0,ov.width,ov.height);
+  spots.forEach(sp=>{
+    if(!sp)return; // З3.4: null-safe
+    const col=sp.color||'rgba(255,255,255,0.9)';
+    const r250s=sp.r250||125,r600s=sp.r600||300;
+    ctx.beginPath();ctx.arc(sp.cx,sp.cy,r250s,0,Math.PI*2);
+    ctx.strokeStyle=col;ctx.lineWidth=4.5;ctx.setLineDash([]);ctx.stroke();
+    ctx.beginPath();ctx.arc(sp.cx,sp.cy,r600s,0,Math.PI*2);
+    const col65=col.replace(/[\d.]+\)$/,'0.65)');
+    ctx.strokeStyle=col65;ctx.lineWidth=4.5;
+    ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.beginPath();ctx.arc(sp.cx,sp.cy,5,0,Math.PI*2);ctx.fillStyle=col;ctx.fill(); // К1: центр крупнее
+    if(sp.label){ctx.fillStyle=col;drawArcText(ctx,sp.label,sp.cx,sp.cy,r600s);}
+    // Score дугой по нижнему полукругу r600
+    if(sp.score!=null){
+      const s6=Math.round(sp.score);
+      const s2=sp.score250!=null?Math.round(sp.score250):null;
+      const scoreTxt=(s2!=null?`${s6}|${s2}`:String(s6));
+      drawArcScore(ctx,scoreTxt,sp.cx,sp.cy,r600s,col);
+    }
+  });
+}
+
+// Rec.709 luma из канальных гистограмм одного патча
+function _lumaHist(patch){
+  const hr=patch._hR,hg=patch._hG,hb=patch._hB;
+  if(!hr)return null;
+  const h=new Float32Array(256);
+  for(let i=0;i<256;i++) h[i]=hr[i]*0.299+hg[i]*0.587+hb[i]*0.114;
+  return h;
+}
+// Основная функция — принимает массив spots (до 3) или одиночный patch (drag-preview)
+// Цвета спотов: серый/тёплый/тёмный
+const HIST_COLORS=['rgba(200,200,200,0.9)','rgba(255,220,100,0.85)','rgba(120,140,200,0.85)'];
+function drawSpotHistogram(spotsOrPatch, canvasEl, scores){
+  if(!canvasEl)return;
+  const W=CONFIG.HIST.SPOT_W,H=CONFIG.HIST.SPOT_H;
+  const ctx=canvasEl.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#16161c';ctx.fillRect(0,0,W,H);
+  // Вертикальные пунктиры: чёрный/серый/белый норма
+  [[20,'rgba(255,255,255,0.2)'],[127,'rgba(255,255,255,0.35)'],[230,'rgba(255,255,255,0.2)']].forEach(([v,c])=>{
+    const x=Math.round(v/255*(W-1));
+    ctx.strokeStyle=c;ctx.lineWidth=1;ctx.setLineDash([3,3]);
+    ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  // Определяем список патчей для рисования
+  let patches,colors;
+  if(Array.isArray(spotsOrPatch)){
+    patches=spotsOrPatch.map((sp,i)=>({h:sp?_lumaHist(sp.patchLarge):null,col:HIST_COLORS[i]})).filter(p=>p.h);
+  } else {
+    // одиночный patch (drag preview) — серый
+    const h=_lumaHist(spotsOrPatch);
+    patches=h?[{h,col:'rgba(180,180,180,0.85)'}]:[];
+  }
+  if(!patches.length){ctx.setLineDash([]);canvasEl.style.display='block';return;}
+
+  // Peak: комбинация Б (count threshold) + А (percentile clip)
+  // Шаг 1 (Б): считаем total пикселей по всем патчам, порог = max(3, total*0.001)
+  // Бины ниже порога не участвуют в поиске peak — JPEG артефакты (1-5 пикс) не влияют
+  // Шаг 2 (А): из оставшихся значимых баров берём 98-й перцентиль как peak
+  // — защита от пересвеченной белой карты где много пикселей в бине 255
+  // Бары выше peak клипуются на высоту canvas — видны как столбик у края
+  let totalCount=0;
+  patches.forEach(({h})=>{for(let i=0;i<256;i++)totalCount+=h[i];});
+  const binThreshold=Math.max(3, totalCount*0.001);
+
+  // Собрать все значимые значения баров для percentile
+  const sigVals=[];
+  patches.forEach(({h})=>{
+    for(let i=0;i<256;i++) if(h[i]>=binThreshold) sigVals.push(h[i]);
+  });
+  if(!sigVals.length){canvasEl.style.display='block';return;}
+  sigVals.sort((a,b)=>a-b);
+  const peak=sigVals[Math.floor(sigVals.length*0.98)]||sigVals[sigVals.length-1];
+  if(!peak){canvasEl.style.display='block';return;}
+
+  const bw=Math.max(1,Math.round(W/256)+1);
+  patches.forEach(({h,col})=>{
+    ctx.fillStyle=col;
+    for(let i=0;i<256;i++){
+      const x=Math.round(i/255*(W-1));
+      const bH=Math.min(H-2, Math.round(h[i]/peak*(H-4))); // клип: выше peak → до края
+      if(bH>0)ctx.fillRect(x,H-bH,bw,bH);
+    }
+  });
+  // Score overlay: верхний правый угол — общая оценка сцены 600/250
+  if(scores&&scores.s600!=null){
+    const s6=Math.round(scores.s600);
+    const s2=scores.s250!=null?Math.round(scores.s250):null;
+    const txt=s2!=null?`${s6}/${s2}`:String(s6);
+    ctx.font='bold 20px ui-monospace,SF Mono,monospace';
+    const tw=ctx.measureText(txt).width;
+    const clr=s6>=CONFIG.SCORE.OK?'#6ec96e':s6>=CONFIG.SCORE.WARN?'#e8a020':'#e05050';
+    ctx.shadowColor='rgba(0,0,0,0.95)';ctx.shadowBlur=6;
+    ctx.fillStyle=clr;
+    ctx.textBaseline='top';
+    ctx.fillText(txt,W-tw-4,2);
+    ctx.shadowBlur=0;
+  }
+  canvasEl.style.display='block';
+}
+
+// ── v1.2-D вариант А: Cr/Cb диаграмма — планкианская кривая + skin locus + точка спота ──
+// Canvas 150×150px. Cr = ось X (Blue←→Amber), Cb = ось Y (Magenta←→Green).
+// Планкианская кривая: Temperature_to_RGB → ycbcr() — использует существующие функции.
+// Skin locus: broadcast константа BT.601, угол ~123° (FUTURE §v1.2-D).
+const _SKIN_LOCUS={cr_center:0.15,cb_center:0.03,width:0.06,angle_deg:123};
+// Кэш кривой — строится один раз
+let _planckCache=null;
+function _buildPlanckianLocus(){
+  if(_planckCache)return _planckCache;
+  const pts=[];
+  for(let T=2000;T<=10000;T+=150){
+    const[r,g,b]=Temperature_to_RGB(T);
+    const{Cb,Cr}=ycbcr(r,g,b);
+    pts.push({T,dCr:Cr-128,dCb:Cb-128});
+  }
+  _planckCache=pts;
+  return pts;
+}
+function drawYCbCrDiag(canvasEl, spots, T_exact, frameData){
+  if(!canvasEl)return;
+  const W=canvasEl.width, H=canvasEl.height;
+  const ctx=canvasEl.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#0d0d12';
+  ctx.fillRect(0,0,W,H);
+
+  // Автомасштаб вариант В: RANGE по реальному разбросу данных.
+  // Планкиан рисуется полностью — clip rect обрезает за края.
+  let _spread=7;
+  const _pts=[];
+  spots.forEach(s=>{
+    if(s&&s.patchLarge){const{Cb,Cr}=ycbcr(s.patchLarge.medR,s.patchLarge.medG,s.patchLarge.medB);
+      _pts.push(Math.abs(Cr-128),Math.abs(Cb-128));}
+  });
+  if(frameData&&frameData.medR!==undefined){
+    const{Cb,Cr}=ycbcr(frameData.medR,frameData.medG,frameData.medB);
+    _pts.push(Math.abs(Cr-128),Math.abs(Cb-128));
+  }
+  if(_pts.length)_spread=Math.max(7,Math.max(..._pts)*1.7);
+  const RANGE=Math.min(42,Math.round(_spread));
+  // Шаг сетки по масштабу
+  const _gStep=RANGE<=8?2:RANGE<=18?5:10;
+  // Преобразование dCr/dCb → пиксели (центр = W/2, H/2)
+  const toX=dCr=>(W/2)+(dCr/RANGE)*(W/2-8);
+  const toY=dCb=>(H/2)-(dCb/RANGE)*(H/2-8); // Y инвертирован: Cb+ = Green = вверх
+
+  // Clip rect — планкиан не вылезает за рамку
+  ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
+
+  // Сетка
+  ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=0.5;
+  for(let d=-RANGE*3;d<=RANGE*3;d+=_gStep){
+    ctx.beginPath();ctx.moveTo(toX(d),4);ctx.lineTo(toX(d),H-4);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(4,toY(d));ctx.lineTo(W-4,toY(d));ctx.stroke();
+  }
+
+  // Оси
+  ctx.strokeStyle='rgba(255,255,255,0.18)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(toX(0),4);ctx.lineTo(toX(0),H-4);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(4,toY(0));ctx.lineTo(W-4,toY(0));ctx.stroke();
+
+  // Подписи осей
+  // Режим: споты или кадр
+  ctx.font='7px ui-monospace,monospace';ctx.fillStyle='rgba(255,255,255,0.3)';
+  ctx.textAlign='left';
+  ctx.fillText((typeof _ycbcrMode!=='undefined'&&_ycbcrMode==='frame'?'⊞ кадр':'● споты')+' ±'+Math.round(RANGE), 3, 8);
+  ctx.textAlign='center';
+  ctx.fillText('G+',W/2,7);
+  ctx.fillText('M+',W/2,H-1);
+  ctx.textAlign='left';
+  ctx.fillText('B+',2,H/2-2);
+  ctx.textAlign='right';
+  ctx.fillText('A+',W-2,H/2-2);
+
+  // Планкианская кривая
+  const locus=_buildPlanckianLocus();
+  ctx.strokeStyle='rgba(180,180,255,0.55)';ctx.lineWidth=1.5;
+  ctx.beginPath();
+  locus.forEach((p,i)=>{
+    const x=toX(p.dCr),y=toY(p.dCb);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+  // Метки температур на кривой
+  ctx.font='6px ui-monospace,monospace';ctx.fillStyle='rgba(180,180,255,0.5)';
+  [3200,5500,8000].forEach(T=>{
+    const p=locus.find(p=>Math.abs(p.T-T)<200);
+    if(p){ctx.textAlign='left';ctx.fillText(T+'K',toX(p.dCr)+3,toY(p.dCb)-2);}
+  });
+
+  // Skin locus — полоса ~123° от оси Cr (BT.601 broadcast константа)
+  const sk=_SKIN_LOCUS;
+  const ang=sk.angle_deg*Math.PI/180;
+  const len=RANGE*0.7, hw=sk.width*RANGE;
+  const cx0=sk.cr_center*RANGE, cy0=sk.cb_center*RANGE;
+  const dx=Math.cos(ang)*len, dy=Math.sin(ang)*len;
+  const nx=-Math.sin(ang)*hw, ny=Math.cos(ang)*hw;
+  ctx.strokeStyle='rgba(255,180,100,0.45)';ctx.lineWidth=hw*W/RANGE/2;
+  ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(toX(cx0-dx/2),toY(cy0-dy/2));
+  ctx.lineTo(toX(cx0+dx/2),toY(cy0+dy/2));
+  ctx.stroke();
+  ctx.lineCap='butt';
+  ctx.font='6px ui-monospace,monospace';
+  ctx.fillStyle='rgba(255,180,100,0.6)';
+  ctx.textAlign='left';
+  ctx.fillText('skin',toX(cx0+dx/2)+2,toY(cy0+dy/2)+3);
+
+  // Точка(и) спота — серый/белый/чёрный
+  const spotColors=['rgba(200,200,200,0.95)','rgba(255,255,180,0.9)','rgba(100,120,160,0.8)'];
+  if(spots){
+    spots.forEach((sp,si)=>{
+      if(!sp||!sp.patchLarge)return;
+      const{Cb,Cr}=ycbcr(sp.patchLarge.medR,sp.patchLarge.medG,sp.patchLarge.medB);
+      const dCr=Cr-128,dCb=Cb-128;
+      const x=toX(dCr),y=toY(dCb);
+      // Тень
+      ctx.beginPath();ctx.arc(x,y,5,0,2*Math.PI);
+      ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fill();
+      // Точка
+      ctx.beginPath();ctx.arc(x,y,4,0,2*Math.PI);
+      ctx.fillStyle=spotColors[si]||'#fff';ctx.fill();
+      // Метка
+      if(si===0){
+        ctx.font='bold 7px ui-monospace,monospace';
+        ctx.fillStyle='#fff';ctx.textAlign='left';
+        ctx.fillText(`${dCr>=0?'+':''}${dCr.toFixed(0)}/${dCb>=0?'+':''}${dCb.toFixed(0)}`,x+6,y+3);
+      }
+    });
+  }
+
+  // Точка кадра — серая маленькая (если есть frameData)
+  if(frameData&&frameData.medR!==undefined){
+    const{Cb:fCb,Cr:fCr}=ycbcr(frameData.medR,frameData.medG,frameData.medB);
+    const fdCr=fCr-128,fdCb=fCb-128;
+    const fx=toX(fdCr),fy=toY(fdCb);
+    ctx.beginPath();ctx.arc(fx,fy,3,0,2*Math.PI);
+    ctx.fillStyle='rgba(160,160,160,0.5)';ctx.fill();
+    ctx.font='6px ui-monospace,monospace';ctx.fillStyle='rgba(160,160,160,0.45)';
+    ctx.textAlign='left';ctx.fillText('frm',fx+5,fy+3);
+  }
+  // Нейтральная точка — перекрестие
+  ctx.strokeStyle='rgba(80,220,80,0.6)';ctx.lineWidth=1;
+  const ox=toX(0),oy=toY(0);
+  ctx.beginPath();ctx.moveTo(ox-5,oy);ctx.lineTo(ox+5,oy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(ox,oy-5);ctx.lineTo(ox,oy+5);ctx.stroke();
+  ctx.restore(); // конец clip (автомасштаб)
+}
+
+function drawFrameHistogramOnCanvas(hR,hG,hB,total,targetCanvas){
+  const src=drawFrameHistogram(hR,hG,hB,total);
+  const ctx=targetCanvas.getContext('2d');
+  ctx.clearRect(0,0,targetCanvas.width,targetCanvas.height);
+  ctx.drawImage(src,0,0,targetCanvas.width,targetCanvas.height);
+}
+function drawFrameHistogram(hR,hG,hB,total){
+  const W=500,H=80;
+  const c=document.createElement('canvas');c.width=W;c.height=H;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#16161c';ctx.fillRect(0,0,W,H);
+  // Peak только из рабочей зоны 16-239 — края не влияют на масштаб
+  // Бины 0-15 (чёрная карта) и 240-255 (пересвет) рисуются но не масштабируют
+  let peak=0;
+  for(let i=16;i<CONFIG.HIST.CLIP_ZONE;i++){
+    if(hR[i]>peak)peak=hR[i];
+    if(hG[i]>peak)peak=hG[i];
+    if(hB[i]>peak)peak=hB[i];
+  }
+  if(!peak) for(let i=0;i<256;i++){if(hR[i]>peak)peak=hR[i];if(hG[i]>peak)peak=hG[i];if(hB[i]>peak)peak=hB[i];}
+  if(!peak)return c;
+  const cols=[['rgba(224,80,80,0.7)',hR],['rgba(62,207,106,0.7)',hG],['rgba(74,143,232,0.7)',hB]];
+  cols.forEach(([col,h])=>{
+    ctx.beginPath();ctx.fillStyle=col;
+    for(let i=0;i<256;i++){
+      const x=Math.round(i/255*(W-1));
+      const barH=Math.round(h[i]/peak*(H-2));
+      ctx.fillRect(x,H-barH,Math.max(1,Math.round(W/256)),barH);
+    }
+  });
+  // axis line
+  ctx.strokeStyle='#252530';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(0,H-1);ctx.lineTo(W,H-1);ctx.stroke();
+  return c;
+}
+// З3.1: updateSpotBtns — кнопки спотов. onConfirm — коллбэк фиксации при повторном нажатии
+function updateSpotBtns(slotId, spots, activeStep, onShow, onDel, onConfirm){
+  const el=document.getElementById('spotBtns'+slotId);
+  if(!el)return;
+  const NAMES=['СЕРАЯ','БЕЛАЯ','ЧЁРНАЯ'];
+  let html='';
+  for(let i=0;i<3;i++){
+    const sp=spots[i];
+    const isActive=(activeStep===i&&activeStep<3);
+    const cls=sp==null?'':sp.score>=CONFIG.SCORE.OK?'ok':sp.score>=CONFIG.SCORE.WARN?'warn':'bad';
+    const activeCls=isActive?' active':'';
+    const scoreStr=sp?(sp.score250!=null?` ${Math.round(sp.score)}/${Math.round(sp.score250)}`
+                                        :` ${Math.round(sp.score)}`):'';    const warn=sp&&sp.score<40?' ⚠':'';
+    const label=isActive?'Установить':`${NAMES[i]}${scoreStr}${warn}`;
+    const blinkCls=isActive?' blink':'';
+    html+=`<div class="spot-btn-pair">
+      <button class="spot-btn-main ${cls}${activeCls}${blinkCls}" data-si="${i}" data-active="${isActive?1:0}">${label}</button>
+      <button class="spot-btn-del" data-si="${i}">✕</button>
+    </div>`;
+  }
+  el.innerHTML=html;
+  el.classList.add('visible');
+  el.querySelectorAll('.spot-btn-main').forEach(btn=>{
+    btn.onclick=()=>{
+      if(+btn.dataset.active&&onConfirm) onConfirm();
+      else onShow(+btn.dataset.si);
+    };
+  });
+  el.querySelectorAll('.spot-btn-del').forEach(btn=>{
+    btn.onclick=()=>onDel(+btn.dataset.si);
+  });
+}
+// drawAutoSpots: рисует кружки спотов статично (мигание кнопок — через CSS blink)
+function drawAutoSpots(slotId,spots,oW,oH){
+  drawCircles(slotId,spots,oW,oH);
+}
+function stopPulse(){
+  document.querySelectorAll('.circles-canvas').forEach(el=>{
+    el.style.animation='';el.style.opacity='1';
+  });
+}
+// ═══════════════════════════════════════════════════
+// buildIntegralImage: один проход по disp canvas
+// sR/sG/sB — Uint32Array (max disp sum ~245M << Uint32 max 4.29B, экономия ~11MB vs Float64)
+// sR2/sG2/sB2 — Float64Array (r*r до 65025, sum до 93B > Uint32 max)
+function buildIntegralImage(canvas){
+  const W=canvas.width,H=canvas.height;
+  const _t0=performance.now();
+  const data=canvas.getContext('2d').getImageData(0,0,W,H).data;
+  const stride=W+1;
+  const sR=new Uint32Array(stride*(H+1)),sG=new Uint32Array(stride*(H+1)),
+        sB=new Uint32Array(stride*(H+1)),sR2=new Float64Array(stride*(H+1)),
+        sG2=new Float64Array(stride*(H+1)),sB2=new Float64Array(stride*(H+1)),
+        sCr=new Float32Array(stride*(H+1)),sCb=new Float32Array(stride*(H+1));
+  for(let y=1;y<=H;y++){
+    for(let x=1;x<=W;x++){
+      const pi=((y-1)*W+(x-1))*4;
+      const r=data[pi],g=data[pi+1],b=data[pi+2];
+      const i=y*stride+x;
+      sR[i]=r+sR[i-1]+sR[i-stride]-sR[i-stride-1];
+      sG[i]=g+sG[i-1]+sG[i-stride]-sG[i-stride-1];
+      sB[i]=b+sB[i-1]+sB[i-stride]-sB[i-stride-1];
+      sR2[i]=r*r+sR2[i-1]+sR2[i-stride]-sR2[i-stride-1];
+      sG2[i]=g*g+sG2[i-1]+sG2[i-stride]-sG2[i-stride-1];
+      sB2[i]=b*b+sB2[i-1]+sB2[i-stride]-sB2[i-stride-1];
+      // Cr/Cb для динамического порога суперспота (YCbCr BT.601)
+      const cr=0.5*r-0.418688*g-0.081312*b; // Cr−128 (без +128 для нулевого центра)
+      const cb=-0.168736*r-0.331264*g+0.5*b; // Cb−128
+      sCr[i]=cr+sCr[i-1]+sCr[i-stride]-sCr[i-stride-1];
+      sCb[i]=cb+sCb[i-1]+sCb[i-stride]-sCb[i-stride-1];
+    }
+  }
+  dbgLog('buildII '+W+'×'+H+' '+(performance.now()-_t0).toFixed(0)+'ms '+(8*(W+1)*(H+1)*4/1024/1024).toFixed(0)+'MB');
+  return{sR,sG,sB,sR2,sG2,sB2,sCr,sCb,W,H,stride};
+}
+// iiRect: среднее и sigma по каналу для прямоугольника (x0,y0)-(x1,y1)
+function iiRect(s,s2,stride,x0,y0,x1,y1){
+  const n=(x1-x0)*(y1-y0);if(!n)return{mean:0,sigma:0};
+  const sum=s[y1*stride+x1]-s[y0*stride+x1]-s[y1*stride+x0]+s[y0*stride+x0];
+  const sum2=s2[y1*stride+x1]-s2[y0*stride+x1]-s2[y1*stride+x0]+s2[y0*stride+x0];
+  const mean=sum/n;
+  const sigma=Math.sqrt(Math.max(0,sum2/n-mean*mean));
+  return{mean,sigma};
+}
+// ── N8: detectLightingGradient — детектор неравномерного освещения через II (MATH_SPEC §17.5) ──
+// Сравнивает mean яркости левой vs правой половины + верхней vs нижней.
+// Использует sG (зелёный канал — наиболее нейтральный для яркости).
+function detectLightingGradient(ii){
+  if(!ii)return null;
+  const{W,H,stride,sG}=ii;
+  const mL=iiRect(sG,sG,stride,0,0,Math.floor(W/2),H).mean;
+  const mR=iiRect(sG,sG,stride,Math.floor(W/2),0,W,H).mean;
+  const mT=iiRect(sG,sG,stride,0,0,W,Math.floor(H/2)).mean;
+  const mB=iiRect(sG,sG,stride,0,Math.floor(H/2),W,H).mean;
+  const dLR=Math.abs(mL-mR), dTB=Math.abs(mT-mB);
+  const maxDelta=Math.max(dLR,dTB);
+  const dir=maxDelta===dLR?(mL>mR?'лево':'право'):(mT>mB?'верх':'низ');
+  return{dLR:Math.round(dLR),dTB:Math.round(dTB),maxDelta:Math.round(maxDelta),dir,warn:maxDelta>20};
+}
+
+// ── v1.2-A findSuperSpot — WB по нейтральным пикселям кадра ──
+// v1.2-E: динамический порог через sCr/sCb из II; белый суперспот = топ 15% по Y
+function findSuperSpot(canvas, ii){
+  const{THR,MIN_PX}=CONFIG.SUPER;
+  const W=canvas.width,H=canvas.height;
+  const data=canvas.getContext('2d').getImageData(0,0,W,H).data;
+  const total=W*H;
+  // ── Динамический порог ──
+  let dynTHR=THR;
+  if(ii&&ii.sCr&&total>0){
+    const stride=ii.stride;
+    const meanCr=Math.abs(ii.sCr[H*stride+W]/total)/128;
+    const meanCb=Math.abs(ii.sCb[H*stride+W]/total)/128;
+    dynTHR=Math.min(THR*2, THR+Math.max(meanCr,meanCb)*0.5);
+  }
+  const temps=[];
+  const pixR=[],pixG=[],pixB=[],pixY=[];
+  let sumR=0,sumG=0,sumB=0;
+  for(let i=0;i<data.length;i+=4){
+    const R=data[i],G=data[i+1],B=data[i+2];
+    const Y=(R+G+B)/3;
+    if(Y<15||Y>240)continue;
+    if(Math.abs(R-G)/Y<dynTHR&&Math.abs(B-G)/Y<dynTHR){
+      const wb=calcWB(R,G,B,false);
+      if(wb.T_exact>CONFIG.WB.TEMP_MIN&&wb.T_exact<CONFIG.WB.TEMP_MAX){
+        temps.push(wb.T_exact);sumR+=R;sumG+=G;sumB+=B;
+        pixR.push(R);pixG.push(G);pixB.push(B);pixY.push(Y);
+      }
+    }
+  }
+  const count=temps.length;
+  if(count<MIN_PX){dbgLog(`superSpot: мало пикселей ${count}<${MIN_PX} dynTHR=${dynTHR.toFixed(3)}`);return{count,valid:false,dynTHR:Math.round(dynTHR*1000)/1000};}
+  temps.sort((a,b)=>a-b);
+  const T_super=temps[Math.floor(count/2)];
+  const mean=temps.reduce((s,v)=>s+v,0)/count;
+  const sigma_T=Math.round(Math.sqrt(temps.reduce((s,v)=>s+(v-mean)**2,0)/count));
+  const medR=Math.round(sumR/count),medG=Math.round(sumG/count),medB=Math.round(sumB/count);
+  // σ нормирован на яркость: R/Y — для сравнимости со спотом 600
+  const varR=pixR.reduce((s,v,i)=>s+(v/(pixY[i]||1)-1.0)**2,0)/count;
+  const varG=pixG.reduce((s,v,i)=>s+(v/(pixY[i]||1)-1.0)**2,0)/count;
+  const varB=pixB.reduce((s,v,i)=>s+(v/(pixY[i]||1)-1.0)**2,0)/count;
+  const sigR=Math.round(Math.sqrt(Math.max(0,varR))*255*10)/10;
+  const sigG=Math.round(Math.sqrt(Math.max(0,varG))*255*10)/10;
+  const sigB=Math.round(Math.sqrt(Math.max(0,varB))*255*10)/10;
+  // RGB trim через гистограмму (один проход, pixR/G/B ещё в памяти)
+  const hssR=new Int32Array(256),hssG=new Int32Array(256),hssB=new Int32Array(256);
+  for(let j=0;j<count;j++){hssR[pixR[j]]++;hssG[pixG[j]]++;hssB[pixB[j]]++;}
+  const trimR=Math.round(histTrimmedMean(hssR,count));
+  const trimG=Math.round(histTrimmedMean(hssG,count));
+  const trimB=Math.round(histTrimmedMean(hssB,count));
+  // Y-гистограмма по 5 бинам (0-50,50-100,100-150,150-200,200-255) для диагностики
+  const yBins=[0,0,0,0,0];
+  for(let j=0;j<count;j++) yBins[Math.min(4,Math.floor(pixY[j]/50))]++;
+  const wb=calcWB(medR,medG,medB,false);
+  // ── Белый суперспот — топ 15% по Y ──
+  const WHITE_MIN_PX=200;
+  let whiteSuper=null;
+  const sortedY=[...pixY].sort((a,b)=>b-a);
+  const whiteCut=sortedY[Math.floor(count*0.15)]||0;
+  const wT=[],wR=[0],wG=[0],wB=[0],wN=[0];
+  for(let j=0;j<count;j++){
+    if(pixY[j]>=whiteCut){
+      const wbw=calcWB(pixR[j],pixG[j],pixB[j],false);
+      wT.push(wbw.T_exact);wR[0]+=pixR[j];wG[0]+=pixG[j];wB[0]+=pixB[j];wN[0]++;
+    }
+  }
+  if(wN[0]>=WHITE_MIN_PX){
+    wT.sort((a,b)=>a-b);
+    const wc=wN[0];
+    const wMed=wT[Math.floor(wc/2)];
+    const wMean=wT.reduce((s,v)=>s+v,0)/wc;
+    const wSigT=Math.round(Math.sqrt(wT.reduce((s,v)=>s+(v-wMean)**2,0)/wc));
+    const wmR=Math.round(wR[0]/wc),wmG=Math.round(wG[0]/wc),wmB=Math.round(wB[0]/wc);
+    const wwb=calcWB(wmR,wmG,wmB,false);
+    const greyTb=Math.round(wb.T_exact/100)*100;
+    whiteSuper={count:wc,T_base:wwb.T_base,T_exact:wwb.T_exact,
+                sigma_T:wSigT,medR:wmR,medG:wmG,medB:wmB,
+                deltaK:wwb.T_base-greyTb};
+  }
+  dbgLog(`superSpot: count=${count} T=${Math.round(T_super)}K σT=${sigma_T}K dynTHR=${dynTHR.toFixed(3)}`+(whiteSuper?` white=${whiteSuper.T_base}K Δ${whiteSuper.deltaK}K`:''));
+  return{count,valid:true,dynTHR:Math.round(dynTHR*1000)/1000,
+         T_super:Math.round(T_super),sigma_T,sigR,sigG,sigB,medR,medG,medB,
+         trimR,trimG,trimB,yBins,
+         T_exact:wb.T_exact,T_base:wb.T_base,T_remainder:wb.T_remainder,green:wb.green,
+         stepsGM:wb.stepsGM,stepsGM_int:wb.stepsGM_int,
+         stepsBA:wb.stepsBA,stepsBA_int:wb.stepsBA_int,
+         whiteSuper};
+}
+function calcSpotScore(patch,type){
+  const cfg=CONFIG.AUTO[type.toUpperCase()];
+  if(!cfg||!patch||!patch.count)return 0;
+  const[tR,tG,tB]=cfg.target;
+  const dist=(Math.abs(patch.medR-tR)+Math.abs(patch.medG-tG)+Math.abs(patch.medB-tB))/3;
+  const avgSigma=(patch.sigmaR+patch.sigmaG+patch.sigmaB)/3;
+  const distScore=Math.max(0,100-dist*2.5);
+  const noiseScore=Math.max(0,100-avgSigma*4);
+  return Math.round(distScore*0.7+noiseScore*0.3);
+}
+// findAutoSpot: sliding window через II, возвращает {cx,cy} в disp-координатах
+function findAutoSpot(ii,disp,type,norm,scaleND){
+  const{W,H,stride,sR,sG,sB,sR2,sG2,sB2}=ii;
+  const cfg=CONFIG.AUTO[type.toUpperCase()];
+  const rl=Math.round(CONFIG.PATCH.R_LARGE/scaleND); // радиус в disp
+  const step=Math.max(4,Math.round(rl/CONFIG.AUTO.STEP_DIV));
+  const M=Math.ceil(CONFIG.PATCH.MARGIN/scaleND); // Б2.3: унифицировано с _dragMove
+  let bestScore=-1,bestCx=Math.round(W/2),bestCy=Math.round(H/2);
+  for(let cy=M;cy<=H-M;cy+=step){
+    for(let cx=M;cx<=W-M;cx+=step){
+      const x0=cx-rl,y0=cy-rl,x1=cx+rl,y1=cy+rl;
+      const qR=iiRect(sR,sR2,stride,x0,y0,x1,y1);
+      const qG=iiRect(sG,sG2,stride,x0,y0,x1,y1);
+      const qB=iiRect(sB,sB2,stride,x0,y0,x1,y1);
+      const lum=(qR.mean+qG.mean+qB.mean)/3;
+      if(lum<cfg.lumMin||lum>cfg.lumMax)continue;
+      const[tR,tG,tB]=cfg.target;
+      const dist=(Math.abs(qR.mean-tR)+Math.abs(qG.mean-tG)+Math.abs(qB.mean-tB))/3;
+      const avgSigma=(qR.sigma+qG.sigma+qB.sigma)/3;
+      const sc=Math.max(0,100-dist*2.5)*0.7+Math.max(0,100-avgSigma*4)*0.3;
+      if(sc>bestScore){bestScore=sc;bestCx=cx;bestCy=cy;}
+    }
+  }
+  return{cx:bestCx,cy:bestCy};
+}
+// ═══════════════════════════════════════════════════
+// FORMATTERS — display helpers
+// ═══════════════════════════════════════════════════
+
+function fK(wb){return`<span class="vK">${wb.T_base}K</span><span class="vR"> ~${Math.round(wb.T_exact)}K Δ${wb.T_remainder>=0?'+':''}${Math.round(wb.T_remainder)}K</span>`;}
+function fGM(wb){const s=wb.stepsGM,si=wb.stepsGM_int,cls=si>0?'vM':si<0?'vG':'vN',lbl=si>0?`M+${si}`:si<0?`G+${-si}`:'M/G 0';return`<span class="${cls}">${lbl}</span><span class="vR"> (${s>=0?'+':''}${s.toFixed(2)})</span>`;}
+function fBA(wb){const si=wb.stepsBA_int,lbl=si>0?`A+${si}`:si<0?`B+${-si}`:'B/A 0';const clr=si===0?'var(--muted)':si>0?'var(--amber)':'var(--blue)';return`<span style="color:${clr};font-weight:bold">${lbl}</span><span class="vR"> (${wb.stepsBA>=0?'+':''}${wb.stepsBA.toFixed(2)})</span>`;}
+function fRGB(r,g,b){return`<span class="rR">${r}</span>/<span class="rG">${g}</span>/<span class="rB">${b}</span>`;}
+// YCbCr диагностика: Cb=128→нейтраль (хол/тепл), Cr=128→нейтраль (зел/пур)
+// fYCbCrVariant: какой будет YCbCr патча если применить WB для T_alt
+// Симулирует: patch * (WBgain_T_alt / WBgain_T_exact) → YCbCr
+function fYCbCrVariant(patch,T_exact,T_alt){
+  const rRef=Temperature_to_RGB(T_exact), rAlt=Temperature_to_RGB(T_alt);
+  // Коэффициенты коррекции относительно G-канала (||1e-9 — защита от деления на 0 на краях спектра)
+  const gR=(rRef[1]/(rRef[0]||1e-9))/(rAlt[1]/(rAlt[0]||1e-9));
+  const gB=(rRef[1]/(rRef[2]||1e-9))/(rAlt[1]/(rAlt[2]||1e-9));
+  const R=Math.max(0,Math.min(255,patch.medR*gR));
+  const G=patch.medG;
+  const B=Math.max(0,Math.min(255,patch.medB*gB));
+  const{Cb,Cr}=ycbcr(R,G,B);
+  const dCb=Cb-128,dCr=Cr-128;
+  const crClr=dCr>0?'var(--amber)':dCr<0?'var(--blue)':'var(--muted)'; // UI.3: без порога
+  const cbClr=dCb>0?'var(--green)':dCb<0?'var(--magenta)':'var(--muted)';
+  return`Cb<span style="color:${cbClr}">${dCb>=0?'+':''}${dCb.toFixed(1)}</span>`+
+    ` Cr<span style="color:${crClr}">${dCr>=0?'+':''}${dCr.toFixed(1)}</span>`;
+}
+function ycbcr(R,G,B){
+  return{
+    Cb:128-37.79*R/255-74.49*G/255+112.44*B/255,
+    Cr:128+112.44*R/255-93.77*G/255-18.21*B/255
+  };
+}
+// YCbCr цвета: Cr=температурная ось (Cr+→amber/тепло, Cr-→blue/холод)
+//              Cb=тинт-ось (Cb+→green, Cb-→magenta). Порог убран (UI.3) — красить по знаку.
+function fYCbCr(patch){
+  const{Cb,Cr}=ycbcr(patch.medR,patch.medG,patch.medB);
+  const dCb=Cb-128,dCr=Cr-128;
+  const crClr=dCr>0?'var(--amber)':dCr<0?'var(--blue)':'var(--muted)';
+  const cbClr=dCb>0?'var(--green)':dCb<0?'var(--magenta)':'var(--muted)';
+  return`Cb<span style="color:${cbClr}">${dCb>=0?'+':''}${dCb.toFixed(1)}</span> `+
+    `Cr<span style="color:${crClr}">${dCr>=0?'+':''}${dCr.toFixed(1)}</span>`;
+}
+function fBAval(T_exact,T_alt){const{stepsBA_int:v}=calcStepsBA(T_exact,T_alt);const lbl=v>0?`A+${v}`:v<0?`B+${-v}`:'B/A 0';const clr=v===0?'var(--muted)':v>0?'var(--amber)':'var(--blue)';return`<span style="color:${clr};font-weight:bold">${lbl}</span>`;}
+function noiseVal(p){return Math.max(p.sigmaR,p.sigmaG,p.sigmaB)/255*100;}
+function noiseClr(n){return n>10?'var(--red)':n>3?'var(--amber)':'var(--muted)';}
+
+// ── M1: calcSigma — Σ=dCr+dCb (MATH_SPEC §16.3) ──
+// Σ>0 пурпур (M), Σ<0 зелень (G). Ось T (тепло/холод) ортогональна Σ.
+function calcSigma(R,G,B){
+  const{Cb,Cr}=ycbcr(R,G,B);
+  return (Cr-128)+(Cb-128);
+}
+// ── M1b: calcDist — евклидова норма в YCbCr (fix Б-SIGMA) ──
+// Используется для минимизации, порогов, N-шагов — не даёт ложный нуль при взаимной компенсации Cr/Cb
+function calcDist(R,G,B){
+  const{Cb,Cr}=ycbcr(R,G,B);
+  return Math.sqrt((Cr-128)*(Cr-128)+(Cb-128)*(Cb-128));
+}
+
+// ── M1: simRGB — симуляция RGB при смене K (MATH_SPEC §16.3) ──
+// Gain через Temperature_to_RGB; G-канал не меняется
+function simRGB(R,G,B,T_exact,T_alt){
+  const rRef=Temperature_to_RGB(T_exact),rAlt=Temperature_to_RGB(T_alt);
+  const gR=(rRef[1]/(rRef[0]||1e-9))/(rAlt[1]/(rAlt[0]||1e-9));
+  const gB=(rRef[1]/(rRef[2]||1e-9))/(rAlt[1]/(rAlt[2]||1e-9));
+  return[Math.max(0,Math.min(255,R*gR)),G,Math.max(0,Math.min(255,B*gB))];
+}
+
+// ── M2: calcYCbCrOpt — рекурсивная оптимизация T по Σ (MATH_SPEC §16.2) ──
+const YCBCR_OPT={SIGMA_THRESHOLD:12,SCAN_RANGE:700,MAX_ITER:6,MIN_IMPROVEMENT:0.5,MAX_DELTA:1500};
+function calcYCbCrOpt(medR,medG,medB,T_exact){
+  const T_base=Math.round(T_exact/100)*100;
+  const s0=calcSigma(medR,medG,medB);          // знаковая — для отображения
+  const d0=calcDist(medR,medG,medB);            // евклидова — для порога (fix Б-SIGMA)
+  if(d0>YCBCR_OPT.SIGMA_THRESHOLD)return{skip:true,sigma0:s0};
+  let curR=medR,curG=medG,curB=medB,Te_cur=T_exact;
+  let bestT=T_base,bestAbs=d0;
+  for(let i=0;i<YCBCR_OPT.MAX_ITER;i++){
+    const Tb_cur=Math.round(Te_cur/100)*100;
+    let T_opt=Tb_cur,sMin=calcDist(curR,curG,curB); // евклидова минимизация
+    for(let dT=-YCBCR_OPT.SCAN_RANGE;dT<=YCBCR_OPT.SCAN_RANGE;dT+=100){
+      const T_test=Tb_cur+dT;
+      if(T_test<CONFIG.WB.TEMP_MIN||T_test>CONFIG.WB.TEMP_MAX)continue;
+      const[R2,,B2]=simRGB(curR,curG,curB,Te_cur,T_test);
+      const st=calcDist(R2,curG,B2);              // евклидова минимизация
+      if(st<sMin){sMin=st;T_opt=T_test;}
+    }
+    if(T_opt===Tb_cur||sMin>=bestAbs-YCBCR_OPT.MIN_IMPROVEMENT)break;
+    [curR,curG,curB]=simRGB(curR,curG,curB,Te_cur,T_opt);
+    Te_cur=T_opt;bestT=T_opt;bestAbs=sMin;
+  }
+  const delta=bestT-T_base;
+  return{skip:false,sigma0:s0,T_ycbcr:bestT,sigma_f:calcSigma(curR,curG,curB),delta,reliable:Math.abs(delta)<=YCBCR_OPT.MAX_DELTA};
+}
+// RENDER — calcDiagData + renderDiag + loadSlot
+// ═══════════════════════════════════════════════════
+// calcDiagData: pure computation — no DOM, no HTML
+// Returns all derived values for renderDiag and exportReport
+// calcSceneScore: общий score сцены по 1-3 спотам (MATH_SPEC §18)
+function calcSceneScore(spots){
+  const active=spots.filter(s=>s&&s.score!=null);
+  if(!active.length)return 0;
+  const avgSpot=active.reduce((s,p)=>s+p.score,0)/active.length;
+  if(active.length<2)return Math.round(avgSpot);
+  const Ks=active.map(s=>s.patchLarge?calcWB(s.patchLarge.medR,s.patchLarge.medG,s.patchLarge.medB,false).T_exact:0).filter(k=>k>0);
+  if(Ks.length<2)return Math.round(avgSpot);
+  const deltaK=Math.max(...Ks)-Math.min(...Ks);
+  const consistency=Math.max(0,100-deltaK/8);
+  return Math.round(avgSpot*0.8+consistency*0.2);
+}
+// calcSceneScore250: то же по score250 (патч 250px)
+function calcSceneScore250(spots){
+  const active=spots.filter(s=>s&&s.score250!=null);
+  if(!active.length)return null;
+  const avgSpot=active.reduce((s,p)=>s+p.score250,0)/active.length;
+  if(active.length<2)return Math.round(avgSpot);
+  const Ks=active.map(s=>s.patchSmall?calcWB(s.patchSmall.medR,s.patchSmall.medG,s.patchSmall.medB,false).T_exact:0).filter(k=>k>0);
+  if(Ks.length<2)return Math.round(avgSpot);
+  const deltaK=Math.max(...Ks)-Math.min(...Ks);
+  const consistency=Math.max(0,100-deltaK/8);
+  return Math.round(avgSpot*0.8+consistency*0.2);
+}
+// sceneScores: хелпер — возвращает {s600, s250} для передачи в drawSpotHistogram
+function sceneScores(spots){
+  return{s600:calcSceneScore(spots),s250:calcSceneScore250(spots)};
+}
+function calcDiagData(spots,exif,tm,frameData){
+  if(!spots[0])return {};
+  if(!frameData)return {}; // C1.7: frameData null guard
+  const patchSmall=spots[0].patchSmall,patchLarge=spots[0].patchLarge;
+
+  const allWarns=[];
+  const baShift=(exif&&exif.make==='Canon')?(exif.wbShiftBA||0):0;
+  if(exif&&exif.make==='Canon'){
+    const shiftParts=[];
+    if(exif.wbShiftBA!==null&&exif.wbShiftBA!==0){
+      const lbl=exif.wbShiftBA>0?`A+${exif.wbShiftBA}`:`B+${-exif.wbShiftBA}`;
+      shiftParts.push(`B/A: ${lbl}`);
+    }
+    if(exif.wbShiftMG!==null&&exif.wbShiftMG!==0){
+      const lbl=exif.wbShiftMG>0?`G+${exif.wbShiftMG}`:`M+${-exif.wbShiftMG}`;
+      shiftParts.push(`M/G: ${lbl}`);
+    }
+    if(shiftParts.length){
+      const _notes=[baShift?'B/A учтён':'',
+                   (exif.wbShiftMG&&exif.wbShiftMG!==0)?'M/G на T не влияет':'']
+        .filter(Boolean).join(', ');
+      allWarns.push(`ℹ сдвиг в EXIF: ${shiftParts.map(p=>p.replace(/^[BM]\/[AG]: /,'')).join(', ')}${_notes?' ('+_notes+')':''}`);
+    }
+  }
+  allWarns.push(...getPatchWarnings(patchSmall.medR,patchSmall.medG,patchSmall.medB).map(w=>`250px ${w}`));
+  allWarns.push(...getPatchWarnings(patchLarge.medR,patchLarge.medG,patchLarge.medB).map(w=>`600px ${w}`));
+
+  const t0=performance.now();
+  // N2: applyBACorr — корректируем T_exact на B/A сдвиг камеры для всех WB результатов
+  // N1: σ-trim WB (mean±2σ из гистограммы патча)
+  const jpegSigTrim250=applyBACorr(calcWB(patchSmall.sigTrimR,patchSmall.sigTrimG,patchSmall.sigTrimB,false),baShift);
+  const linSigTrim250 =applyBACorr(calcWB(patchSmall.sigTrimR,patchSmall.sigTrimG,patchSmall.sigTrimB,true), baShift);
+  const jpegSigTrim600=applyBACorr(calcWB(patchLarge.sigTrimR,patchLarge.sigTrimG,patchLarge.sigTrimB,false),baShift);
+  const linSigTrim600 =applyBACorr(calcWB(patchLarge.sigTrimR,patchLarge.sigTrimG,patchLarge.sigTrimB,true), baShift);
+  const jpegMed250=applyBACorr(calcWB(patchSmall.medR,patchSmall.medG,patchSmall.medB,false),baShift);
+  const linMed250 =applyBACorr(calcWB(patchSmall.medR,patchSmall.medG,patchSmall.medB,true), baShift);
+  const jpegMed600=applyBACorr(calcWB(patchLarge.medR,patchLarge.medG,patchLarge.medB,false),baShift);
+  const linMed600 =applyBACorr(calcWB(patchLarge.medR,patchLarge.medG,patchLarge.medB,true), baShift);
+  // Trimmed mean WB (5%-95%)
+  const jpegTrim250=applyBACorr(calcWB(patchSmall.trimR,patchSmall.trimG,patchSmall.trimB,false),baShift);
+  const linTrim250 =applyBACorr(calcWB(patchSmall.trimR,patchSmall.trimG,patchSmall.trimB,true), baShift);
+  const jpegTrim600=applyBACorr(calcWB(patchLarge.trimR,patchLarge.trimG,patchLarge.trimB,false),baShift);
+  const linTrim600 =applyBACorr(calcWB(patchLarge.trimR,patchLarge.trimG,patchLarge.trimB,true), baShift);
+  if(jpegMed600.T_exact>15000)allWarns.push('⚠ выше 15000K — вне диапазона Canon');
+  if(linMed600.T_exact>15000)allWarns.push('⚠ LIN выше 15000K');
+  tm.calcWB=Math.round(performance.now()-t0);
+
+  // N1: Δ |percentile-trim - σ-trim|
+  const dSTR250=Math.abs(Math.round(jpegTrim250.T_exact)-Math.round(jpegSigTrim250.T_exact));
+  const dSTL250=Math.abs(Math.round(linTrim250.T_exact) -Math.round(linSigTrim250.T_exact));
+  const dSTR600=Math.abs(Math.round(jpegTrim600.T_exact)-Math.round(jpegSigTrim600.T_exact));
+  const dSTL600=Math.abs(Math.round(linTrim600.T_exact) -Math.round(linSigTrim600.T_exact));
+  const dZR=Math.abs(Math.round(jpegMed250.T_exact)-Math.round(jpegMed600.T_exact));
+  const dZL=Math.abs(Math.round(linMed250.T_exact)-Math.round(linMed600.T_exact));
+  // Δ |median_T - trim_T| — устойчивость к выбросам
+  const dMMR250=Math.abs(Math.round(jpegMed250.T_exact)-Math.round(jpegTrim250.T_exact));
+  const dMMR600=Math.abs(Math.round(jpegMed600.T_exact)-Math.round(jpegTrim600.T_exact));
+  const dMML250=Math.abs(Math.round(linMed250.T_exact)-Math.round(linTrim250.T_exact));
+  const dMML600=Math.abs(Math.round(linMed600.T_exact)-Math.round(linTrim600.T_exact));
+  const n250=noiseVal(patchSmall),n600=noiseVal(patchLarge);
+
+  const wbFrame=applyBACorr(calcWB(frameData.medR,frameData.medG,frameData.medB,false),baShift);
+  const wbFrameLin=applyBACorr(calcWB(frameData.medR,frameData.medG,frameData.medB,true),baShift);
+  const wbFrameTrim=applyBACorr(calcWB(frameData.trimR,frameData.trimG,frameData.trimB,false),baShift);
+  const wbFrameTrimLin=applyBACorr(calcWB(frameData.trimR,frameData.trimG,frameData.trimB,true),baShift);
+  const kr=patchLarge.medG/Math.max(patchLarge.medR,1);
+  const kb=patchLarge.medG/Math.max(patchLarge.medB,1);
+
+  const dMMRFrm=Math.abs(Math.round(wbFrame.T_exact)-Math.round(wbFrameTrim.T_exact));
+  const dMMLFrm=Math.abs(Math.round(wbFrameLin.T_exact)-Math.round(wbFrameTrimLin.T_exact));
+  const ycbcrOpt=calcYCbCrOpt(patchLarge.medR,patchLarge.medG,patchLarge.medB,jpegMed600.T_exact); // T_exact уже с N2 коррекцией
+  // M3: Σ со знаком для 600px
+  const sigma600=calcSigma(patchLarge.medR,patchLarge.medG,patchLarge.medB);
+  const sigma250=calcSigma(patchSmall.medR,patchSmall.medG,patchSmall.medB);
+  const sigmaFrm=frameData?calcSigma(frameData.medR,frameData.medG,frameData.medB):0;
+  // sigmaAuto вычисляется в renderDiag где superSpot доступен как параметр
+
+  // N8: детектор градиента освещения
+  const gradient=detectLightingGradient(frameData&&frameData.ii?frameData.ii:null);
+  if(gradient&&gradient.warn)
+    allWarns.push(`⚠ неравномерный свет: ΔLR=${gradient.dLR} ΔTB=${gradient.dTB} — ярче ${gradient.dir}`);
+
+  return{
+    patchSmall,patchLarge,allWarns,
+    jpegMed250,linMed250,jpegMed600,linMed600,
+    dZR,dZL,dMMR250,dMMR600,dMML250,dMML600,dMMRFrm,dMMLFrm,
+    jpegTrim250,linTrim250,jpegTrim600,linTrim600,
+    jpegSigTrim250,linSigTrim250,jpegSigTrim600,linSigTrim600,
+    dSTR250,dSTL250,dSTR600,dSTL600,
+    n250,n600,wbFrame,wbFrameLin,wbFrameTrim,wbFrameTrimLin,kr,kb,
+    ycbcrOpt,sigma600,sigma250,sigmaFrm,gradient
+  };
+}
+
+function renderSuperSpot(slotId,ss,exif){
+  const el=document.getElementById('result'+slotId);if(!el)return;
+  const baShift=(exif&&exif.make==='Canon')?(exif.wbShiftBA||0):0;
+  const old=el.querySelector('.super-result');if(old)old.remove();
+  const div=document.createElement('div');
+  div.className='super-result';
+  div.style.cssText='margin-top:6px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:10px';
+  if(!ss||!ss.valid){
+    div.innerHTML='<span style="color:var(--muted)">\u25ce Кадр: нейтральных зон недостаточно (найдено '+(ss?ss.count:0)+' px, нужно \u2265'+CONFIG.SUPER.MIN_PX+')</span>';
+    el.appendChild(div);return;
+  }
+  const wb=applyBACorr(ss,baShift);
+  const T=wb.T_base,g=wb.stepsGM_int;
+  const gLbl=g>0?'M+'+g:g<0?'G+'+(-g):'M/G\u00a00';
+  const gClr=g>0?'var(--magenta)':g<0?'var(--green)':'var(--muted)';
+  const sigWarn=ss.sigma_T>CONFIG.SUPER.SIGMA_T_BAD?'\u26a0\u00a0несколько источников':ss.sigma_T>CONFIG.SUPER.SIGMA_T_WARN?'\u2139\u00a0смешанный свет':'';
+  const sigClr=ss.sigma_T>CONFIG.SUPER.SIGMA_T_BAD?'var(--amber)':ss.sigma_T>CONFIG.SUPER.SIGMA_T_WARN?'var(--muted)':'var(--green)';
+  div.innerHTML=
+    '<span style="color:var(--muted)">\u25ce Кадр:\u00a0</span>'+
+    '<b style="color:var(--accent)">'+T+'K</b>\u00a0'+
+    '<span style="color:'+gClr+'">'+gLbl+'</span>\u00a0'+
+    '<span style="color:var(--muted);font-size:9px">\u03c3<sub>T</sub>='+ss.sigma_T+'K\u00a0\u00b7\u00a0'+ss.count.toLocaleString()+'px'+
+    (sigWarn?'\u00a0\u00b7\u00a0<span style="color:'+sigClr+'">'+sigWarn+'</span>':'')+
+    '</span>';
+  el.appendChild(div);
+}
+function renderDiag(slotId,spots,exif,filename,tm,frameData,superSpot,normPx,fileSizeKb){
+  const el=document.getElementById('result'+slotId);
+  let d;
+  try{ d=calcDiagData(spots,exif,tm,frameData); }
+  catch(e){ dbgLog('renderDiag calcDiagData ERR: '+e.message); d=null; }
+  const hasGray=!!(d&&d.patchSmall);
+  // Заглушки для прочерков
+  const dash='<span style="color:var(--muted)">—</span>';
+  const fKd   =v=>hasGray?fK(v):dash;
+  const fGMd  =v=>hasGray?fGM(v):dash;
+  const fBAd  =v=>hasGray?fBA(v):dash;
+  const fRGBd =(r,g,b)=>hasGray?fRGB(r,g,b):dash;
+  const fYCbCrd=v=>hasGray?fYCbCr(v):dash;
+  const fNd   =v=>hasGray?v:dash;
+  const{patchSmall,patchLarge,allWarns=[],
+    jpegMed250,linMed250,jpegMed600,linMed600,
+    dZR=0,dZL=0,dMMR250=0,dMMR600=0,dMML250=0,dMML600=0,dMMRFrm=0,dMMLFrm=0,
+    jpegTrim250,linTrim250,jpegTrim600,linTrim600,
+    jpegSigTrim250,linSigTrim250,jpegSigTrim600,linSigTrim600,
+    dSTR250=0,dSTL250=0,dSTR600=0,dSTL600=0,
+    n250=0,n600=0,wbFrame=null,wbFrameLin=null,wbFrameTrim=null,wbFrameTrimLin=null,kr=1,kb=1,
+    ycbcrOpt=null,sigma600=0,sigma250=0,sigmaFrm=0,gradient=null}=d||{};
+  const sigmaAuto=(superSpot&&superSpot.valid)?calcSigma(superSpot.medR,superSpot.medG,superSpot.medB):null;
+  
+  // п.4: EXIF блок в отдельный div
+  const exifInfoEl=document.getElementById('exifInfo'+slotId);
+  if(exifInfoEl){
+    const ps=[],ps2=[];
+    if(exif){
+      if(exif.model)ps.push('<b>'+escapeHtml(exif.model)+'</b>');
+      if(exif.iso)ps.push('ISO '+exif.iso);
+      if(exif.exposureTime)ps.push(exif.exposureTime+'s');
+      if(exif.fNumber)ps.push('f/'+exif.fNumber.toFixed(1));
+      if(exif.focalLength)ps.push(Math.round(exif.focalLength)+'mm');
+      if(exif.exposureBias!=null&&exif.exposureBias!==0)ps.push((exif.exposureBias>0?'+':'')+exif.exposureBias.toFixed(1)+'EV');
+      if(exif.make==='Canon'){
+        ps2.push(exif.wbMode===1?'WB Manual':'<span class="warn">WB Auto</span>');
+        if(exif.colorTemp!==null)ps2.push('<span style="color:var(--accent)">'+exif.colorTemp+'K</span>');
+        const baV=exif.wbShiftBA??0,mgV=exif.wbShiftMG??0;
+        ps2.push('B/A:'+(baV>0?'A+'+baV:baV<0?'B+'+(-baV):'0'));
+        ps2.push('M/G:'+(mgV>0?'G+'+mgV:mgV<0?'M+'+(-mgV):'0'));
+      }
+      if(exif.lensModel)ps2.push('<span style="font-size:9px;color:var(--muted)">'+escapeHtml(exif.lensModel)+'</span>');
+      if(exif.dateTime)ps2.push('<span style="font-size:9px;color:var(--muted)">'+exif.dateTime+'</span>');
+    }
+    const baV=exif?.wbShiftBA??0,mgV=exif?.wbShiftMG??0;
+    const shiftStr=(baV||mgV)?
+      (baV?(baV>0?'A':'B')+'+'+Math.abs(baV):'')+(baV&&mgV?' · ':'')+(mgV?(mgV>0?'G':'M')+'+'+Math.abs(mgV):'')
+      :'';
+    const shiftWarn=shiftStr?'<div style="color:var(--muted);margin-top:3px">ℹ EXIF сдвиг: '+shiftStr+(baV?' · B/A учтён в T':'')+(mgV?' · M/G на T не влияет':'')+'</div>':'';
+    const errWarn=exif?.error?'<div style="color:var(--amber)">⚠ '+escapeHtml(exif.error)+'</div>':'';
+    const sizeStr=fileSizeKb?`<span style="color:var(--muted);font-size:9px">${fileSizeKb} KB</span>`:'';    
+    const line1=(ps.length?ps.join(' · '):'нет EXIF')+(sizeStr?' · '+sizeStr:'');
+    const line2=ps2.length?ps2.join(' · '):'';
+    exifInfoEl.innerHTML=line1+(line2?'<br>'+line2:'')+shiftWarn+errWarn;
+  }
+  let exifStr='';
+  const shiftNote=(exif&&exif.make==='Canon'&&(exif.wbShiftBA||exif.wbShiftMG))?
+    `<span style="color:var(--amber);font-size:8px"> ⚠сдвиг</span>`:'';
+  
+  
+  const fGMc=wb=>wb?(()=>{const si=wb.stepsGM_int,cls=si>0?'vM':si<0?'vG':'vN',lbl=si>0?`M+${si}`:si<0?`G+${-si}`:'M/G 0';return`<span class="${cls}">${lbl}</span>`;})():dash;
+  const fBAc=wb=>wb?(()=>{const si=wb.stepsBA_int,lbl=si>0?`A+${si}`:si<0?`B+${-si}`:'B/A 0',clr=si===0?'var(--muted)':si>0?'var(--amber)':'var(--blue)';return`<span style="color:${clr};font-weight:bold">${lbl}</span>`;})():dash;
+  let cmpHtml='';
+  {
+    // Ф2а — резюме: 4 колонки (linTrim как основной метод карты A4)
+    const ss=superSpot;
+    const ssValid=ss&&ss.valid;
+    const fK2a=wb=>wb?`<b style="color:var(--accent)">${wb.T_base}K</b>`:dash;
+    const fG=wb=>wb?fGMc(wb):dash;
+    const fB=wb=>wb?fBAc(wb):dash;
+    const ssWB=ssValid?applyBACorr(ss,(exif&&exif.make==='Canon')?(exif.wbShiftBA||0):0):null;
+    const ssK=ssValid?`<b style="color:var(--accent)">${ssWB.T_base}K</b>`:dash;
+    const ssG=ssValid?fGMc(ssWB):dash;
+    const ssB=ssValid?fBAc(ssWB):dash;
+    const hl='background:rgba(255,255,255,0.07);border-radius:2px';
+    cmpHtml=`<div class="cmp-box"><div class="cmp-ttl"><span style="color:var(--muted);opacity:0.5">Ф2а</span> ИТОГ (метод: LIN trim · карта A4)</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse">
+        <tr><td class="lbl" style="width:28%"></td>
+            <td style="font-size:9px;color:var(--muted);text-align:center">250</td>
+            <td style="font-size:9px;color:var(--muted);text-align:center;${hl}">600</td>
+            <td style="font-size:9px;color:var(--muted);text-align:center">Авто</td>
+            <td style="font-size:9px;color:var(--muted);text-align:center">Кадр</td></tr>
+        <tr><td class="lbl">K</td>
+            <td style="text-align:center">${hasGray?fK2a(linTrim250):dash}</td>
+            <td style="text-align:center;${hl}">${hasGray?fK2a(linTrim600):dash}</td>
+            <td style="text-align:center">${ssK}</td>
+            <td style="text-align:center">${fK2a(wbFrameTrimLin)}</td></tr>
+        <tr><td class="lbl">M/G</td>
+            <td style="text-align:center">${hasGray?fG(linTrim250):dash}</td>
+            <td style="text-align:center;${hl}">${hasGray?fG(linTrim600):dash}</td>
+            <td style="text-align:center">${ssG}</td>
+            <td style="text-align:center">${fG(wbFrameTrimLin)}</td></tr>
+        <tr><td class="lbl">B/A</td>
+            <td style="text-align:center">${hasGray?fB(linTrim250):dash}</td>
+            <td style="text-align:center;${hl}">${hasGray?fB(linTrim600):dash}</td>
+            <td style="text-align:center">${ssB}</td>
+            <td style="text-align:center">${fB(wbFrameTrimLin)}</td></tr>
+        <tr><td class="lbl" style="font-size:9px">dist</td>
+            <td style="text-align:center;font-size:9px;color:var(--muted)">${hasGray?calcDist(patchSmall.medR,patchSmall.medG,patchSmall.medB).toFixed(1):dash}</td>
+            <td style="text-align:center;font-size:9px;color:var(--muted);${hl}">${hasGray?calcDist(patchLarge.medR,patchLarge.medG,patchLarge.medB).toFixed(1):dash}</td>
+            <td style="text-align:center;font-size:9px;color:var(--muted)">${sigmaAuto!==null?calcDist(superSpot.medR,superSpot.medG,superSpot.medB).toFixed(1):dash}</td>
+            <td style="text-align:center;font-size:9px;color:var(--muted)">${frameData?calcDist(frameData.medR,frameData.medG,frameData.medB).toFixed(1):dash}</td></tr>
+      </table></div>`;
+  }
+  const frm=frameData||Object.assign({},FRM_FALLBACK,{hR:new Int32Array(256),hG:new Int32Array(256),hB:new Int32Array(256)});
+  const dispPx=frm.count||1;
+  const _normPx=(normPx&&normPx>dispPx)?normPx:dispPx;
+  assertShapeMatch(frameData,FRM_FALLBACK,'frameData');
+  assertShapeMatch(d&&d.patchSmall,PATCH_FALLBACK,'patchSmall');
+  assertShapeMatch(d&&d.patchLarge,PATCH_FALLBACK,'patchLarge');
+  // O1: histDataUrl кэшируется в frm._histDataUrl — не пересчитывается при каждом renderDiag
+  if(!frm._histDataUrl){
+    frm._histDataUrl=drawFrameHistogram(frm.hR,frm.hG,frm.hB,frm.count).toDataURL('image/png');
+  }
+  const histDataUrl=frm._histDataUrl;
+
+  const histsHtml=''; // гистограмма вынесена в popup (кнопка Гист в шапке)
+
+  // ── ДАННЫЕ: каждая строка проверяет свой источник ──────────────────
+  const em='<td class="vR" style="color:var(--muted)">—</td>';
+  // Хелперы для ячеек с двумя значениями JPEG·LIN
+  const fYCbCrSig=q=>{const sg=calcSigma(q.medR,q.medG,q.medB);return fYCbCr(q)+` <span style="color:var(--muted);font-size:8px">Σ${sg>=0?'+':''}${sg.toFixed(1)}</span>`;};
+  const fKrec=wb=>`<span class="vK">${wb.T_base}K</span>`;
+  const fKdelta=wb=>wb?(()=>{const d=Math.round(wb.T_remainder);return`<span class="vR">Δ${d>=0?'+':''}${d}K</span>`;})():dash;
+  // Ячейка: JPEG (amber) · LIN (green) рядом — два отдельных td
+  // YCbCr строки для белого/чёрного
+  const spW=spots&&spots[1],spB=spots&&spots[2];
+
+  // helper: 1 значение с colspan=2 для Ф3а строк
+  const td2=(v)=>`<td colspan="2">${v}</td>`;
+  // helper: JPEG·LIN пара (требует серого)
+  // jl с опциональным выделением (hlLin=true → фон на LIN ячейке)
+  const jl=(j,l,fn,hlLin)=>hasGray
+    ?`<td style="color:var(--amber);font-size:9px;white-space:nowrap">${fn(j)}</td><td style="color:var(--green);font-size:9px;white-space:nowrap${hlLin?';background:rgba(255,255,255,0.15);border-radius:2px':''}">${fn(l)}</td>`
+    :`<td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td>`;
+  const em2=`<td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td>`;
+  // helper для колонки Авто (1 td)
+  const ssWBf=(superSpot&&superSpot.valid)?applyBACorr(superSpot,(exif&&exif.make==='Canon')?(exif.wbShiftBA||0):0):null;
+  const ssCell=(fn)=>ssWBf?`<td style="color:#c47fff;font-size:9px;white-space:nowrap">${fn(ssWBf)}</td>`:'<td style="color:var(--muted)">—</td>';
+  const em1ss='<td style="color:var(--muted)">—</td>';
+  const tbl=`<table class="tbl" style="table-layout:fixed;margin-bottom:0">
+    <colgroup>
+      <col style="width:51px">
+      <col style="width:80px"><col style="width:80px"><col style="width:71px"><col style="width:80px">
+    </colgroup>
+    <thead>
+      <tr>
+        <th><span style="color:var(--muted);opacity:0.45;font-weight:normal">Ф3а</span><span style="color:var(--muted);opacity:0.3;font-weight:normal;font-size:8px"> Исходные</span></th>
+        <th class="hz">250px</th><th class="hz">600px</th>
+        <th class="hz" style="color:#c47fff">Авто</th>
+        <th class="hz" style="color:var(--muted)">кадр</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="lbl">пикселей</td>
+<td style="font-size:9px">${hasGray?patchSmall.count.toLocaleString()+'<br><span style="font-size:8px;color:var(--muted)">'+(patchSmall.count/_normPx*100).toFixed(2)+'%</span>':'—'}</td>
+<td style="font-size:9px">${hasGray?patchLarge.count.toLocaleString()+'<br><span style="font-size:8px;color:var(--muted)">'+(patchLarge.count/_normPx*100).toFixed(2)+'%</span>':'—'}</td><td style="color:#c47fff;font-size:9px">${(superSpot&&superSpot.valid)?superSpot.count.toLocaleString()+'<br><span style="font-size:8px;color:var(--muted)">'+((superSpot.count/dispPx*100).toFixed(1))+'%↓</span>':`<span style="color:var(--muted)">—</span>`}</td><td>${frm.count.toLocaleString()}</td></tr>
+      <tr><td class="lbl">шум</td><td style="color:${noiseClr(n250)};font-size:9px">${hasGray?n250.toFixed(1)+'%':'—'}</td><td style="color:${noiseClr(n600)};font-size:9px">${hasGray?n600.toFixed(1)+'%':'—'}</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td></tr>
+      <tr><td class="lbl" style="font-size:9px">σ R/G/B</td><td style="font-size:8px;color:var(--muted)">${hasGray?(patchSmall.sigmaR||0).toFixed(1)+'/'+(patchSmall.sigmaG||0).toFixed(1)+'/'+(patchSmall.sigmaB||0).toFixed(1):'—'}</td><td style="font-size:8px;color:var(--muted)">${hasGray?(patchLarge.sigmaR||0).toFixed(1)+'/'+(patchLarge.sigmaG||0).toFixed(1)+'/'+(patchLarge.sigmaB||0).toFixed(1):'—'}</td><td style="font-size:8px;color:var(--muted)">${(frm.sigmaR||0).toFixed(1)+'/'+(frm.sigmaG||0).toFixed(1)+'/'+(frm.sigmaB||0).toFixed(1)}</td></tr>
+      <tr><td class="lbl">RGB med</td><td>${hasGray?fRGB(patchSmall.medR,patchSmall.medG,patchSmall.medB):'—'}</td><td>${hasGray?fRGB(patchLarge.medR,patchLarge.medG,patchLarge.medB):'—'}</td><td style="color:#c47fff;font-size:9px">${(superSpot&&superSpot.valid)?fRGB(superSpot.medR,superSpot.medG,superSpot.medB):'—'}</td><td>${fRGB(frm.medR,frm.medG,frm.medB)}</td></tr>
+      <tr><td class="lbl">RGB trim</td><td>${hasGray?fRGB(patchSmall.trimR,patchSmall.trimG,patchSmall.trimB):'—'}</td><td>${hasGray?fRGB(patchLarge.trimR,patchLarge.trimG,patchLarge.trimB):'—'}</td><td style="color:#c47fff;font-size:9px">${(superSpot&&superSpot.valid&&superSpot.trimR!=null)?fRGB(superSpot.trimR,superSpot.trimG,superSpot.trimB):'—'}</td><td>${fRGB(frm.trimR,frm.trimG,frm.trimB)}</td></tr><tr><td class="lbl">σ RGB</td><td style="font-size:9px">${hasGray?fRGB(Math.round(patchSmall.sigmaR),Math.round(patchSmall.sigmaG),Math.round(patchSmall.sigmaB)):'—'}</td><td style="font-size:9px">${hasGray?fRGB(Math.round(patchLarge.sigmaR),Math.round(patchLarge.sigmaG),Math.round(patchLarge.sigmaB)):'—'}</td><td style="color:#c47fff;font-size:9px">${(superSpot&&superSpot.valid&&superSpot.sigR!=null)?fRGB(Math.round(superSpot.sigR),Math.round(superSpot.sigG),Math.round(superSpot.sigB)):'—'}</td><td style="font-size:9px">${fRGB(Math.round(frm.sigmaR),Math.round(frm.sigmaG),Math.round(frm.sigmaB))}</td></tr><tr><td class="lbl" style="font-size:9px;color:var(--muted)">σ яркость</td><td style="font-size:9px">${hasGray?(()=>{const mY=(patchSmall.medR+patchSmall.medG+patchSmall.medB)/3||1;return(Math.max(patchSmall.sigmaR,patchSmall.sigmaG,patchSmall.sigmaB)/mY*100).toFixed(1)+'%';})():'—'}</td><td style="font-size:9px">${hasGray?(()=>{const mY=(patchLarge.medR+patchLarge.medG+patchLarge.medB)/3||1;return(Math.max(patchLarge.sigmaR,patchLarge.sigmaG,patchLarge.sigmaB)/mY*100).toFixed(1)+'%';})():'—'}</td><td style="color:#c47fff;font-size:9px">${(superSpot&&superSpot.valid&&superSpot.sigR!=null)?(Math.max(superSpot.sigR,superSpot.sigG,superSpot.sigB)/255*100).toFixed(1)+'%':'—'}</td><td style="font-size:9px">${(()=>{const mY=(frm.medR+frm.medG+frm.medB)/3||1;return(Math.max(frm.sigmaR||0,frm.sigmaG||0,frm.sigmaB||0)/mY*100).toFixed(1)+'%';})()}</td></tr>
+<tr><td class="lbl">σ<sub>T</sub></td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td><td style="color:${(superSpot&&superSpot.valid)?(superSpot.sigma_T<CONFIG.SUPER.SIGMA_T_WARN?'var(--green)':superSpot.sigma_T<CONFIG.SUPER.SIGMA_T_BAD?'var(--muted)':'var(--amber)'):'var(--muted)'};font-size:9px">${(superSpot&&superSpot.valid)?superSpot.sigma_T+'K':'—'}</td><td style="color:var(--muted)">—</td></tr>
+      ${(()=>{const ssYCC=(superSpot&&superSpot.valid)?fYCbCrSig(superSpot):'—';return`<tr><td class="lbl">YCbCr сер${shiftNote}</td><td>${hasGray?fYCbCrSig(patchSmall):'—'}</td><td>${hasGray?fYCbCrSig(patchLarge):'—'}</td><td style="color:#c47fff;font-size:9px">${ssYCC}</td><td>${fYCbCrSig(frm)}</td></tr>`;})()}
+      <tr><td class="lbl" style="color:rgba(230,230,200,0.75)">YCbCr бел</td><td>${spW?fYCbCrSig(spW.patchSmall):'—'}</td><td>${spW?fYCbCrSig(spW.patchLarge):'—'}</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td></tr>
+      <tr><td class="lbl" style="color:rgba(160,160,190,0.75)">YCbCr чёрн</td><td>${spB?fYCbCrSig(spB.patchSmall):'—'}</td><td>${spB?fYCbCrSig(spB.patchLarge):'—'}</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td></tr>
+      ${(()=>{
+        const wbW250=spW?calcWB(spW.patchSmall.medR,spW.patchSmall.medG,spW.patchSmall.medB,false):null;
+        const wbW600=spW?calcWB(spW.patchLarge.medR,spW.patchLarge.medG,spW.patchLarge.medB,false):null;
+        const wbB250=spB?calcWB(spB.patchSmall.medR,spB.patchSmall.medG,spB.patchSmall.medB,false):null;
+        const wbB600=spB?calcWB(spB.patchLarge.medR,spB.patchLarge.medG,spB.patchLarge.medB,false):null;
+        const fKw=wb=>wb?`<span class="vK">${wb.T_base}K</span> <span class="vR">Δ${Math.round(wb.T_remainder)>=0?'+':''}${Math.round(wb.T_remainder)}K</span>`:'—';
+        const fGw=wb=>wb?fGMc(wb):'—';
+        const em1='<td style="color:var(--muted)">—</td>';
+        const ssWS=superSpot&&superSpot.valid&&superSpot.whiteSuper?superSpot.whiteSuper:null;
+        const dClrWS=ssWS?(Math.abs(ssWS.deltaK)<200?'var(--green)':Math.abs(ssWS.deltaK)<400?'var(--muted)':'var(--amber)'):'var(--muted)';
+        const ssWSCell=ssWS?`<td style="font-size:9px;color:rgba(200,220,255,0.9)"><b>${ssWS.T_base}K</b> <span style="color:${dClrWS};font-size:8px">Δ${ssWS.deltaK>=0?'+':''}${ssWS.deltaK}K</span><br><span style="color:var(--muted);font-size:8px">${ssWS.count.toLocaleString()}px σ${ssWS.sigma_T}K</span></td>`:`<td style="color:var(--muted);font-size:9px">${ssWS===null&&superSpot&&superSpot.valid?'мало px':'—'}</td>`;
+        return`<tr><td class="lbl" style="color:rgba(230,230,200,0.7)">K бел</td><td style="font-size:9px">${fKw(wbW250)}</td><td style="font-size:9px">${fKw(wbW600)}</td>${ssWSCell}</tr>`+
+               `<tr><td class="lbl" style="color:rgba(230,230,200,0.7)">M/G бел</td><td style="font-size:9px">${fGw(wbW250)}</td><td style="font-size:9px">${fGw(wbW600)}</td>${em1}${em1}</tr>`+
+               `<tr><td class="lbl" style="color:rgba(160,160,190,0.7)">K чёрн</td><td style="font-size:9px">${fKw(wbB250)}</td><td style="font-size:9px">${fKw(wbB600)}</td>${em1}${em1}</tr>`+
+               `<tr><td class="lbl" style="color:rgba(160,160,190,0.7)">M/G чёрн</td><td style="font-size:9px">${fGw(wbB250)}</td><td style="font-size:9px">${fGw(wbB600)}</td>${em1}${em1}</tr>`;
+      })()}
+      ${(()=>{
+        if(!superSpot)return '';
+        const ssv=superSpot.valid;
+        const pct=ssv?Math.round(superSpot.count/(frm.count||1)*100):0;
+        const ssRGB=ssv?fRGB(superSpot.medR,superSpot.medG,superSpot.medB):'—';
+        const ssSig=ssv&&superSpot.sigR!=null?superSpot.sigR.toFixed(1)+'/'+superSpot.sigG.toFixed(1)+'/'+superSpot.sigB.toFixed(1):'—';
+        const ssTclr=ssv?(superSpot.sigma_T<CONFIG.SUPER.SIGMA_T_WARN?'var(--green)':superSpot.sigma_T<CONFIG.SUPER.SIGMA_T_BAD?'var(--muted)':'var(--amber)'):'var(--muted)';
+        const em='<td style="color:var(--muted)">—</td>';
+        return
+               '<tr><td class="lbl" style="color:#c47fff">нейтр σRGB</td>'+em+em+'<td style="font-size:8px;color:var(--muted)">'+ssSig+'</td></tr>'+
+               '<tr><td class="lbl" style="color:#c47fff">нейтр σ<sub>T</sub></td>'+em+em+'<td style="font-size:9px;color:'+ssTclr+'">'+(ssv?superSpot.sigma_T+'K':'—')+'</td></tr>'+
+               '<tr><td class="lbl" style="color:rgba(255,255,255,0.4);font-size:8px">THR</td>'+em+em+'<td style="font-size:8px;color:var(--muted)">'+(ssv?superSpot.dynTHR.toFixed(3):'—')+'</td></tr>'+
+       '';
+      })()}
+      <tr><td class="lbl">пересвет&gt;245</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td><td style="color:${frm.overPct>5?'var(--amber)':'var(--muted)'};font-size:9px">${frm.overPct}%</td></tr>
+      <tr><td class="lbl">тени&lt;15</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td><td style="color:var(--muted)">—</td><td style="color:${frm.underPct>5?'var(--amber)':'var(--muted)'};font-size:9px">${frm.underPct}%</td></tr>
+    </tbody>
+  </table>
+  <table class="tbl" style="table-layout:fixed;margin-top:4px">
+    <colgroup>
+      <col style="width:51px">
+      <col style="width:40px"><col style="width:40px">
+      <col style="width:40px"><col style="width:40px">
+      <col style="width:80px">
+      <col style="width:40px"><col style="width:40px">
+    </colgroup>
+    <thead>
+      <tr>
+        <th><span style="color:var(--muted);opacity:0.45;font-weight:normal">Ф3б</span><span style="color:var(--muted);opacity:0.3;font-weight:normal;font-size:8px"> Расчётные</span></th>
+        <th colspan="2" style="font-size:7px;color:var(--muted);letter-spacing:0.5px;padding:1px 4px;text-align:center">250</th>
+        <th colspan="2" style="font-size:7px;color:var(--muted);letter-spacing:0.5px;padding:1px 4px;text-align:center">600</th>
+        <th style="font-size:7px;color:#c47fff;letter-spacing:0.5px;padding:1px 4px;text-align:center">Авто</th>
+        <th colspan="2" style="font-size:7px;color:var(--muted);letter-spacing:0.5px;padding:1px 4px;text-align:center">Кадр</th>
+      </tr>
+    </thead>
+      <tr style="border-top:none">
+        <td></td>
+        <td style="font-size:7px;color:var(--amber);text-align:center;padding:0 2px">JPEG</td>
+        <td style="font-size:7px;color:var(--green);text-align:center;padding:0 2px">LIN</td>
+        <td style="font-size:7px;color:var(--amber);text-align:center;padding:0 2px">JPEG</td>
+        <td style="font-size:7px;color:var(--green);text-align:center;padding:0 2px">LIN</td>
+        <td style="font-size:7px;color:#c47fff;text-align:center;padding:0 2px">—</td>
+        <td style="font-size:7px;color:var(--amber);text-align:center;padding:0 2px">JPEG</td>
+        <td style="font-size:7px;color:var(--green);text-align:center;padding:0 2px">LIN</td>
+      </tr>
+    <tbody>
+      <tr style="border-top:1px solid rgba(255,255,255,0.08)"><td class="lbl" style="color:var(--muted);font-size:8px;opacity:0.6" colspan="8">%-trim</td></tr>
+      <tr><td class="lbl">K рек</td>${jl(jpegTrim250,linTrim250,fKrec)}${jl(jpegTrim600,linTrim600,fKrec,true)}${ssCell(fKrec)}${jl(wbFrameTrim,wbFrameTrimLin,fKrec)}</tr>
+      <tr><td class="lbl">K Δ</td>${jl(jpegTrim250,linTrim250,fKdelta)}${jl(jpegTrim600,linTrim600,fKdelta,true)}${ssCell(fKdelta)}${jl(wbFrameTrim,wbFrameTrimLin,fKdelta)}</tr>
+      <tr><td class="lbl">M/G</td>${jl(jpegTrim250,linTrim250,fGMc)}${jl(jpegTrim600,linTrim600,fGMc,true)}${ssCell(fGMc)}${jl(wbFrameTrim,wbFrameTrimLin,fGMc)}</tr>
+      <tr><td class="lbl">B/A</td>${jl(jpegTrim250,linTrim250,fBAc)}${jl(jpegTrim600,linTrim600,fBAc,true)}${ssCell(fBAc)}${jl(wbFrameTrim,wbFrameTrimLin,fBAc)}</tr>
+      <tr style="border-top:1px solid rgba(255,255,255,0.08)"><td class="lbl" style="color:var(--muted);font-size:8px;opacity:0.6" colspan="8">median</td></tr>
+      <tr><td class="lbl">K med</td>${jl(jpegMed250,linMed250,fKrec)}${jl(jpegMed600,linMed600,fKrec)}${em1ss}${jl(wbFrame,wbFrameLin,fKrec)}</tr>
+      <tr><td class="lbl">K med Δ</td>${jl(jpegMed250,linMed250,fKdelta)}${jl(jpegMed600,linMed600,fKdelta)}${em1ss}${jl(wbFrame,wbFrameLin,fKdelta)}</tr>
+      <tr><td class="lbl" style="font-size:8px">Δ med/trim</td><td style="color:var(--amber);font-size:9px">Δ${dMMR250}K</td><td style="color:var(--green);font-size:9px">Δ${dMML250}K</td><td style="color:var(--amber);font-size:9px">Δ${dMMR600}K</td><td style="color:var(--green);font-size:9px">Δ${dMML600}K</td><td style="color:var(--muted);font-size:9px">—</td><td style="color:var(--amber);font-size:9px">Δ${dMMRFrm}K</td><td style="color:var(--green);font-size:9px">Δ${dMMLFrm}K</td></tr>
+      <tr style="border-top:1px solid rgba(255,255,255,0.08)"><td class="lbl" style="color:var(--muted);font-size:8px;opacity:0.6" colspan="8">σ-trim</td></tr>
+      <tr><td class="lbl">K σ-trim</td>${jl(jpegSigTrim250,linSigTrim250,fKrec)}${jl(jpegSigTrim600,linSigTrim600,fKrec)}${em1ss}${em2}</tr>
+      <tr><td class="lbl">K σ-trim Δ</td>${jl(jpegSigTrim250,linSigTrim250,fKdelta)}${jl(jpegSigTrim600,linSigTrim600,fKdelta)}${em1ss}${em2}</tr>
+      <tr><td class="lbl" style="font-size:8px">Δ σ/%-trim</td><td style="color:var(--amber);font-size:9px">Δ${dSTR250}K</td><td style="color:var(--green);font-size:9px">Δ${dSTL250}K</td><td style="color:var(--amber);font-size:9px">Δ${dSTR600}K</td><td style="color:var(--green);font-size:9px">Δ${dSTL600}K</td><td style="color:var(--muted);font-size:9px">—</td><td style="color:var(--muted);font-size:9px">—</td><td style="color:var(--muted);font-size:9px">—</td></tr>
+      <tr style="border-top:1px solid rgba(255,255,255,0.08)"><td class="lbl" style="color:var(--muted);font-size:8px;opacity:0.6" colspan="8">вспом.</td></tr>
+      <tr><td class="lbl">green</td>${jl(jpegTrim250,linTrim250,wb=>`<span class="vR">${wb.green.toFixed(3)}</span>`)}${jl(jpegTrim600,linTrim600,wb=>`<span class="vR">${wb.green.toFixed(3)}</span>`)}${em1ss}${em2}</tr>
+    </tbody>
+  </table>`;
+  
+  const ref=hasGray?linTrim600:null,Tb=ref?ref.T_base:5500;
+  const gLbl=ref?(ref.stepsGM_int>0?`M+${ref.stepsGM_int}`:ref.stepsGM_int<0?`G+${-ref.stepsGM_int}`:'M/G 0'):'—';
+  const gCls=ref?(ref.stepsGM_int>0?'vM':ref.stepsGM_int<0?'vG':'vN'):'vN';
+  // M3: Σ со знаком для каждого варианта
+  function varSigma(T_alt){
+    if(!ref)return'';
+    const[R2,,B2]=simRGB(patchLarge.medR,patchLarge.medG,patchLarge.medB,ref.T_exact,T_alt);
+    const s=calcSigma(R2,patchLarge.medG,B2);
+    return`<span style="color:${s>0?'var(--amber)':s<0?'var(--blue)':'var(--muted)'};font-size:8px">Σ${s>=0?'+':''}${s.toFixed(1)}</span>`;
+  }
+  // Ф4: 11×11 таблица K × B/A — Σ/N в каждой ячейке (только при наличии серого)
+  const F4_MIRED_PER_STEP=5;
+  const F4_SIGMA_PER_STEP=2.3;
+  const f4Rows=11,f4Cols=11;
+  function f4Cell(K_row,ba_step){
+    const mired_base=CONFIG.WB.MIRED_SCALE/K_row;
+    const T_cell=CONFIG.WB.MIRED_SCALE/(mired_base+ba_step*F4_MIRED_PER_STEP);
+    if(T_cell<1500||T_cell>20000)return{sigma:null,dist:null,N:null};
+    const[R2,,B2]=simRGB(patchLarge.medR,patchLarge.medG,patchLarge.medB,ref.T_exact,T_cell);
+    const sigma=calcSigma(R2,patchLarge.medG,B2);  // знаковая — для отображения
+    const dist=calcDist(R2,patchLarge.medG,B2);    // евклидова — для N (fix Б-SIGMA)
+    const N=Math.ceil(dist/F4_SIGMA_PER_STEP);
+    return{sigma,dist,N};
+  }
+  function f4CellColor(dist){  // параметр dist (евклидова), не sigma
+    if(dist===null)return'var(--border)';
+    const a=Math.abs(dist);
+    if(a<2.3)return'#2d6a2d';
+    if(a<4.6)return'#5a7a1a';
+    if(a<9.2)return'#7a5010';
+    return'#6a1a1a';
+  }
+  let variants;
+  if(!hasGray){
+    variants=`<div class="range-box" style="padding:6px 8px"><div class="range-ttl"><span style="color:var(--muted);opacity:0.5">Ф4</span> K × B/A (dist / шагов до нейтрали)</div><div style="color:var(--muted);font-size:9px;padding:4px 0">— нужен серый спот</div></div>`;
+  } else {
+    // Найти ячейку с минимальным dist — реальный оптимум
+    let f4OptK=Tb,f4OptBA=0,f4OptDist=Infinity;
+    for(let ki=0;ki<f4Rows;ki++){
+      const Kr=Tb-500+ki*100;
+      for(let bi=0;bi<f4Cols;bi++){
+        const ba=bi-5;
+        const{dist}=f4Cell(Kr,ba);
+        if(dist!==null&&dist<f4OptDist){f4OptDist=dist;f4OptK=Kr;f4OptBA=ba;}
+      }
+    }
+    const f4Rows_arr=Array.from({length:f4Rows},(_,i)=>Tb-500+i*100);
+    const f4Cols_arr=Array.from({length:f4Cols},(_,i)=>i-5);
+    const f4HeaderCells=f4Cols_arr.map(ba=>{
+      const lbl=ba===0?'0':ba<0?`B${-ba}`:`A${ba}`;
+      const isOpt=ba===ref.stepsBA_int;
+      return`<th style="font-size:7px;text-align:center;padding:1px 0;color:${ba<0?'var(--blue)':ba>0?'var(--amber)':'var(--muted)'};${isOpt?'text-decoration:underline':''}">${lbl}</th>`;
+    }).join('');
+    const f4Body=f4Rows_arr.map(K_row=>{
+      const isOptRow=(K_row===Tb);
+      const rowBorder=isOptRow?'border-top:1px solid var(--accent);border-bottom:1px solid var(--accent)':'';
+      const canonPresets={3200:'Tung',4000:'Fluo',5200:'Day',6000:'Cld',7000:'Shd'};
+      const presetLbl=canonPresets[K_row]?`<span style="color:rgba(255,255,255,0.3);font-size:6px"> ${canonPresets[K_row]}</span>`:'';
+      const kLbl=`<td style="font-size:8px;color:${isOptRow?'var(--accent)':'var(--muted)'};text-align:right;padding-right:3px;white-space:nowrap;${rowBorder}">${K_row}${presetLbl}${isOptRow?'◄':''}</td>`;
+      const cells=f4Cols_arr.map(ba=>{
+        const{sigma,dist,N}=f4Cell(K_row,ba);
+        const isOptCell=(K_row===f4OptK&&ba===f4OptBA);
+        const bg=f4CellColor(dist);
+        const txt=dist===null?'—':dist.toFixed(1);
+        const ntxt=N===null?'':N===0?'✓':`${N}↑`;
+        const border=isOptCell?'outline:2px solid var(--accent);outline-offset:-1px':'';
+        return`<td style="text-align:center;padding:0;background:${bg};${rowBorder};${border}"><div style="font-size:7px;color:#ddd;line-height:1.15">${txt}</div><div style="font-size:6px;color:rgba(255,255,255,0.55)">${ntxt}</div></td>`;
+      }).join('');
+      return`<tr>${kLbl}${cells}</tr>`;
+    }).join('');
+    const f4YCbCrNote=(!ycbcrOpt||ycbcrOpt.skip)
+      ?`<span style="color:var(--muted)">YCbCr T: skip |Σ|>${YCBCR_OPT.SIGMA_THRESHOLD}</span>`
+      :(()=>{const Ty=ycbcrOpt.T_ycbcr;const relMark=ycbcrOpt.reliable?'':'⚠';return`<span style="color:var(--accent)">YCbCr T: ${Ty}K ${relMark}</span> <span style="color:var(--muted)">Σ${ycbcrOpt.sigma0>=0?'+':''}${ycbcrOpt.sigma0.toFixed(1)}→${ycbcrOpt.sigma_f.toFixed(1)}</span>`})();
+    variants=`<div class="range-box" style="padding:6px 8px"><div class="range-ttl"><span style="color:var(--muted);opacity:0.5">Ф4</span> K × B/A (Σ / шагов до нейтрали)</div>
+    <div style="font-size:8px;color:var(--muted);margin-bottom:4px">M/G: <span class="${gCls}">${gLbl}</span> · ${f4YCbCrNote}${shiftNote?` · ${shiftNote}`:''}</div>
+    <div style="overflow-x:auto">
+    <table style="border-collapse:collapse;table-layout:fixed;width:100%">
+      <colgroup><col style="width:38px">${f4Cols_arr.map(()=>'<col style="width:22px">').join('')}</colgroup>
+      <thead><tr><th style="font-size:7px;color:var(--muted);text-align:right;padding-right:3px">K\BA</th>${f4HeaderCells}</tr></thead>
+      <tbody>${f4Body}</tbody>
+    </table>
+    </div>
+    <div style="font-size:7px;color:var(--muted);margin-top:3px;line-height:1.6">
+      <span style="color:#2d6a2d">■</span> |Σ|&lt;2.3 (отлично) &nbsp;
+      <span style="color:#5a7a1a">■</span> &lt;4.6 (1шаг) &nbsp;
+      <span style="color:#7a5010">■</span> &lt;9.2 (2-4шага) &nbsp;
+      <span style="color:#6a1a1a">■</span> ≥9.2
+    </div>
+  </div>`;
+  } // end hasGray else
+  
+
+  
+  const wSlowCls=tm.sampleWhole>5000?'t-slow':'';
+  const grandTotal=tm.loadTotal+tm.sampleWhole+tm.samplePatch+tm.calcWB;
+  const tmBox=`<div class="timing-box">exif <b>${tm.parseExif}ms</b> · img <b>${tm.loadImg}ms</b> · orient <b>${tm.normOrient}ms</b> · wholeFrame <b class="${wSlowCls}">${tm.sampleWhole}ms</b> · autoSpot <b>${tm.samplePatch}ms</b> · calcWB <b>${tm.calcWB}ms</b> · <b style="color:var(--accent)">итого ${grandTotal}ms</b></div>`;
+  
+  // Score блок
+  el.innerHTML=cmpHtml+histsHtml+variants+tmBox;
+  const tableEl=document.getElementById('table'+slotId);
+  if(tableEl) tableEl.innerHTML=tbl;
+  // Store computed data for exportReport (п.8: on DOM element, not global state)
+  el._report={filename,exif,spots,superSpot,frame:frm,tm,normPx,fileSizeKb,...d};
+  // Авто-обновление открытых панелей
+  if(document.getElementById('_superPanel')&&document.getElementById('_superPanel').style.display!=='none') drawSuperDiag();
+  const _hpanel=document.getElementById('_histPanel');
+  if(_hpanel&&_hpanel.style.display!=='none'){
+    const hf=el._report.frame,hc=document.getElementById('_histCanvas');
+    if(hc&&hf)drawFrameHistogramOnCanvas(hf.hR,hf.hG,hf.hB,hf.count,hc);
+  }
+}
+
+async function loadSlot(slotId,file){
+  dbgLog('loadSlot '+slotId+': '+(file&&file.name||'?')+' '+(file?Math.round(file.size/1024)+'KB':''));
+  const pc=document.getElementById('canvas'+slotId),ph=document.getElementById('ph'+slotId);
+  const wrap=document.getElementById('wrap'+slotId),inner=document.getElementById('inner'+slotId);
+  const btn=document.getElementById('btn'+slotId),res=document.getElementById('result'+slotId);
+  const exp=document.getElementById('export'+slotId);
+  const tableArea=document.getElementById('table'+slotId);
+  // tableArea НЕ очищаем — renderDiag заполнит актуальными данными или прочерками
+  const ctEl=document.getElementById('creativeTable'+slotId);
+  if(ctEl) ctEl.innerHTML='';
+  
+  // Б2.2: снять старые document-listeners от предыдущей загрузки
+  if(inner._docMouseUp){document.removeEventListener('mouseup',inner._docMouseUp);inner._docMouseUp=null;}
+  const oldSB=document.getElementById('spotBtns'+slotId);
+  if(oldSB){oldSB.innerHTML='';oldSB.classList.remove('visible');}
+  // Скрыть АВТО до завершения загрузки
+  const autoBtnLoad=document.getElementById('autoBtn'+slotId);
+  if(autoBtnLoad) autoBtnLoad.classList.remove('visible');
+
+  updateProgress(slotId, 5, 'Чтение файла...');
+  _loadingInProgress=true;
+  setUIState(slotId, 'loading');
+  // БАГ-ФИX: немедленно скрыть старое фото и споты до завершения загрузки
+  stopPulse();
+  const ovImm=document.getElementById('circles'+slotId);
+  ovImm.getContext('2d').clearRect(0,0,ovImm.width,ovImm.height);
+  const histImm=document.getElementById('spotHist'+slotId);
+  if(histImm)drawSpotHistogram([],histImm,null);
+  // Yield: дать браузеру отрендерить спиннер ДО тяжёлой синхронной работы
+  await new Promise(r=>setTimeout(r,0));
+  // Показать пустые фреймы сразу
+  const emptyTmLoad={parseExif:0,loadImg:0,normOrient:0,samplePatch:0,calcWB:0,loadTotal:0,sampleWhole:0};
+  renderDiag(slotId,[],null,'',emptyTmLoad,null);
+  
+  const ov=document.getElementById('circles'+slotId);
+  const ctx=ov.getContext('2d');ctx.clearRect(0,0,ov.width,ov.height);
+  let step=0; const spots=[];
+  
+  const tm={parseExif:0,loadImg:0,normOrient:0,samplePatch:0,calcWB:0,loadTotal:0,sampleWhole:0};
+  const tLoad=performance.now();
+  
+  try{
+    // M1: R2.1 — проверка magic bytes FF D8 FF перед обработкой
+    {
+      const hdr=await file.slice(0,3).arrayBuffer();
+      const b=new Uint8Array(hdr);
+      if(b[0]!==0xFF||b[1]!==0xD8||b[2]!==0xFF){
+        res.innerHTML=`<div style="color:var(--red);font-size:10px;padding:5px">⚠ Поддерживаются только JPEG (FF D8 FF)</div>`;
+        updateProgress(slotId,100,'');
+        return;
+      }
+    }
+    let t=performance.now();
+    updateProgress(slotId, 5, 'Чтение файла...');
+    let [exif, img] = await Promise.all([
+      (async()=>{const r=await parseExif(file).catch(()=>null);tm.parseExif=Math.round(performance.now()-t);return r;})(),
+      (async()=>{const r=await loadImg(file);tm.loadImg=Math.round(performance.now()-t);return r;})()
+    ]);
+    if(!exif) exif={error:'EXIF не прочитан'}; // null guard
+    dbgLog('parseExif '+tm.parseExif+'ms / loadImg '+tm.loadImg+'ms / K='+(exif.colorTemp||'?'));
+    updateProgress(slotId, 60, 'Изображение загружено...');
+    
+    t=performance.now();
+    const norm=makeNormCanvas(img);   // full-res для sampleBoth
+    const disp=makeDispCanvas(img);   // scaled напрямую из img — быстрее
+    img=null;                          // M2: освобождаем ~60MB Image после рендера в canvas
+    tm.normOrient=Math.round(performance.now()-t);
+    tm.loadTotal=Math.round(performance.now()-tLoad);
+    updateProgress(slotId, 80, 'Обработка...');
+    const scaleND=norm.width/disp.width; // scale factor norm→disp
+    const normPx=norm.width*norm.height;
+    const pc2=document.getElementById('photoCanvas'+slotId);if(pc2){pc2._normW=norm.width;pc2._normH=norm.height;}
+    const fileSizeKb=file?Math.round(file.size/1024):0;
+    pc.width=disp.width;pc.height=disp.height;
+    pc.getContext('2d').drawImage(disp,0,0);
+    // Б1/Б8: aspect-ratio динамически по реальным размерам изображения
+    // — до загрузки min-height:200px держит placeholder
+    // — после загрузки контейнер точно повторяет aspect ratio фото (Canon, iPhone, любое)
+    // — circles-canvas совпадает с photo-canvas → кружки не превращаются в эллипсы
+    document.getElementById('inner'+slotId).style.aspectRatio=`${disp.width}/${disp.height}`;
+    // circles canvas точно под фото
+    const cc=document.getElementById('circles'+slotId);
+    cc.width=disp.width;cc.height=disp.height;
+    setUIState(slotId,'loaded');
+    btn.onclick=null;
+    btn.style.display='flex'; btn.style.alignItems='center'; btn.style.cursor='default';
+    btn.innerHTML=`<span style="flex:1;overflow:hidden;text-overflow:ellipsis;cursor:pointer" onclick="document.getElementById('fileA').click()">${escapeHtml(file.name)}</span><span style="margin-left:8px;cursor:pointer;color:var(--amber);font-size:13px;flex-shrink:0" onclick="event.stopPropagation();resetSlot('A')">✕</span>`;
+    document.getElementById('creativeTableA').innerHTML='';
+    const tInp=document.getElementById('tInputA');if(tInp)tInp.value='';
+    updateProgress(slotId, 80, 'Весь кадр 0/10...');
+
+    t=performance.now();
+    const frameData=await sampleWholeFrame(disp, ci=>{
+      const pct=80+ci*2; // 80→80+20=100, but we stop at 98
+      updateProgress(slotId, Math.min(pct,98), `Весь кадр ${ci}/10...`);
+    });
+    tm.sampleWhole=Math.round(performance.now()-t);
+    dbgLog('sampleWhole '+tm.sampleWhole+'ms frm.count='+(frameData&&frameData.count||0));
+    updateProgress(slotId, 100, 'Готово');
+    await new Promise(r=>setTimeout(r,400)); // let overlay hide animate
+    
+    const STEPS=['СЕРАЯ','БЕЛАЯ','ЧЁРНАЯ'];
+    const STEP_TYPES=['gray','white','black'];
+    const COLORS=['rgba(200,200,200,0.95)','rgba(255,255,230,0.95)','rgba(100,100,100,0.95)'];
+    const spotHistEl=document.getElementById('spotHist'+slotId);
+    const ycbcrDiagEl=document.getElementById('_vecCanvas');
+    let pendingSpot=null;
+
+    // ── АВТОПОИСК ──────────────────────────────────────
+    // O2: ii кэшируется в замыкании — runAutoSpots переиспользует без пересборки
+    let ii=buildIntegralImage(disp);
+    frameData.ii=ii;
+    window._iiSize=(ii.stride||0)*(disp.height+1)*6*4; // 6 массивов × 4 байта avg // N8: детектор градиента использует ii через frameData
+    const tAuto=performance.now();
+    for(let si=0;si<3;si++){
+      const{cx,cy}=findAutoSpot(ii,disp,STEP_TYPES[si],norm,scaleND);
+      const M=CONFIG.PATCH.MARGIN;
+      const nx=Math.max(M,Math.min(norm.width-M,Math.round(cx*scaleND)));
+      const ny=Math.max(M,Math.min(norm.height-M,Math.round(cy*scaleND)));
+      const _tns=performance.now();const{p250,p600}=sampleBoth(norm,nx,ny);perfMark('normSample',performance.now()-_tns);
+      const sc=calcSpotScore(p600,STEP_TYPES[si]);
+      const sc250=calcSpotScore(p250,STEP_TYPES[si]);
+      spots[si]={cx,cy,nx,ny,
+        r250:Math.round(CONFIG.PATCH.R_SMALL/scaleND),
+        r600:Math.round(CONFIG.PATCH.R_LARGE/scaleND),
+        label:STEPS[si],color:COLORS[si],dashed:si>0,
+        patchSmall:p250,patchLarge:p600,score:sc,score250:sc250,type:STEP_TYPES[si]};
+    }
+    tm.samplePatch=Math.round(performance.now()-tAuto);
+    dbgLog('autoSpots '+tm.samplePatch+'ms: '+spots.map((s,i)=>s?['gray','white','black'][i]+'='+s.score:'?').join(' '));
+    step=3;
+    const safeFileName=escapeHtml(file.name);
+    drawAutoSpots(slotId,spots,disp.width,disp.height);
+    const autoBtnEl=document.getElementById('autoBtn'+slotId);
+    window.runAutoSpots=runAutoSpots; // expose для AutoTour
+    if(autoBtnEl){autoBtnEl.classList.add('visible');autoBtnEl.onclick=()=>{if(_fileLoaded_A)runAutoSpots()};}
+    // §v1.2-A: суперспот считается автоматически после загрузки
+    const superSpot=findSuperSpot(disp,ii);
+    if(slotId==='A') _fileLoaded_A=true;
+    // З3.1: кнопки спотов
+    updateSpotBtns(slotId,spots,3,
+      (si)=>showPrompt(si),
+      (si)=>deleteSpot(si)
+    );
+    // З3.3: гистограмма серого спота — сразу показать
+    if(spotHistEl&&spots[0]&&spots[0].patchLarge){
+      drawSpotHistogram(spots,spotHistEl,sceneScores(spots));
+    }
+    updateVectorPanel(spots,frameData);
+    renderDiag(slotId,spots,exif,safeFileName,tm,frameData,superSpot,normPx,fileSizeKb);
+    exp.disabled=false;
+    updateProgress(slotId,100,'Готово');
+
+    function showPrompt(si){
+      if(!_fileLoaded_A) return;
+      step=si;
+      pendingSpot=null;
+      updateSpotBtns(slotId,spots,si,showPrompt,deleteSpot,confirmSpot);
+    }
+    function deleteSpot(si){
+      dbgLog('deleteSpot si='+si);
+      spots[si]=null;
+      drawCircles(slotId,spots,disp.width,disp.height);
+      stopPulse();
+      updateSpotBtns(slotId,spots,3,showPrompt,deleteSpot,confirmSpot);
+      // обновить гистограмму с оставшимися спотами
+      const activeSp=spots.filter(Boolean);
+      if(spotHistEl){
+        drawSpotHistogram(spots,spotHistEl,spots.some(Boolean)?sceneScores(spots):null);
+      }
+      updateVectorPanel(spots,frameData);
+      renderDiag(slotId,spots,exif,safeFileName,tm,frameData,superSpot,normPx,fileSizeKb);
+    }
+
+    // Подтверждение текущего спота
+    function runAutoSpots(){
+      // O2: ii уже вычислен при загрузке — disp не меняется
+      for(let si=0;si<3;si++){
+        const{cx,cy}=findAutoSpot(ii,disp,STEP_TYPES[si],norm,scaleND);
+        const M=CONFIG.PATCH.MARGIN;
+        const nx=Math.max(M,Math.min(norm.width-M,Math.round(cx*scaleND)));
+        const ny=Math.max(M,Math.min(norm.height-M,Math.round(cy*scaleND)));
+        const{p250,p600}=sampleBoth(norm,nx,ny);
+        const sc=calcSpotScore(p600,STEP_TYPES[si]);
+        const sc250=calcSpotScore(p250,STEP_TYPES[si]);
+        spots[si]={cx,cy,nx,ny,
+          r250:Math.round(CONFIG.PATCH.R_SMALL/scaleND),
+          r600:Math.round(CONFIG.PATCH.R_LARGE/scaleND),
+          label:STEPS[si],color:COLORS[si],dashed:si>0,
+          patchSmall:p250,patchLarge:p600,score:sc,score250:sc250,type:STEP_TYPES[si]};
+      }
+      step=3;pendingSpot=null;
+      drawCircles(slotId,spots,disp.width,disp.height);
+      updateSpotBtns(slotId,spots,3,showPrompt,deleteSpot,confirmSpot);
+      if(spotHistEl&&spots[0])drawSpotHistogram(spots,spotHistEl,sceneScores(spots));
+      updateVectorPanel(spots,frameData);
+      renderDiag(slotId,spots,exif,safeFileName,tm,frameData,superSpot,normPx,fileSizeKb);
+    }
+    function confirmSpot(){
+      if(!pendingSpot) return;
+      dbgLog('confirmSpot si='+step+' T='+(pendingSpot.patchLarge?Math.round(pendingSpot.patchLarge.T_exact)+'K':'?'));
+      spots[step]=pendingSpot;
+      step=3;
+      pendingSpot=null;
+      drawCircles(slotId,spots,disp.width,disp.height);
+      updateSpotBtns(slotId,spots,3,showPrompt,deleteSpot,confirmSpot);
+      renderDiag(slotId,spots,exif,safeFileName,tm,frameData,superSpot,normPx,fileSizeKb);
+      exp.disabled=false;
+      updateProgress(slotId, 100, 'Готово');
+    }
+    if(spotHistEl){
+      spotHistEl.onmousedown=function(e){e.stopPropagation();};
+      spotHistEl.onclick=function(e){
+        e.stopPropagation();
+        const rect=spotHistEl.getBoundingClientRect();
+        const y=e.clientY-rect.top;
+        const btnH=spotHistEl._btnH||28;
+        const scaleY=spotHistEl.clientHeight/spotHistEl.height;
+        if(y>=(spotHistEl.height-btnH)*scaleY) confirmSpot();
+      };
+    }
+
+    // Drag: все три шага — drag + live гистограмма + OK
+    let _dragging=false;
+    let _dragCx=0,_dragCy=0;
+    let _normScoreTimer=null; // throttle: пересчёт score по norm раз в 400ms
+    function _dragMove(ox,oy){
+      if(step>2)return;
+      stopPulse(); // К3: стоп мигание при drag
+      const co=toOrig(ox,oy,inner,disp.width,disp.height);if(!co)return;
+      const Md=Math.ceil(CONFIG.PATCH.MARGIN/scaleND);
+      _dragCx=Math.max(Md,Math.min(disp.width-Md,co.x));
+      _dragCy=Math.max(Md,Math.min(disp.height-Md,co.y));
+      const tmpSp={cx:_dragCx,cy:_dragCy,
+        r250:Math.round(CONFIG.PATCH.R_SMALL/scaleND),
+        r600:Math.round(CONFIG.PATCH.R_LARGE/scaleND),
+        label:STEPS[step],color:COLORS[step]};
+      const tmpArr=[...spots]; tmpArr[step]=tmpSp;
+      drawCircles(slotId,tmpArr,disp.width,disp.height);
+      if(spotHistEl){
+        const rDisp=Math.round(CONFIG.PATCH.R_LARGE/scaleND);
+        const dSp=sampleBothR(disp,_dragCx,_dragCy,rDisp);
+        // drag preview: все споты + временный текущий
+        tmpSp.patchLarge=dSp.p600;tmpSp.patchSmall=dSp.p250;
+        // C2: score из disp мгновенно — считаем ДО отрисовки
+        tmpSp.score=calcSpotScore(dSp.p600,STEP_TYPES[step]);
+        tmpSp.score250=calcSpotScore(dSp.p250,STEP_TYPES[step]);
+        drawCircles(slotId,tmpArr,disp.width,disp.height);
+        drawSpotHistogram(tmpArr,spotHistEl,sceneScores(tmpArr));
+        // Пересчёт из norm на каждый mousemove — на десктопе ~2-5ms, приемлемо
+        // iPhone: вернуть throttle, значение подобрать по замеру на реальном устройстве
+        {
+          const M=CONFIG.PATCH.MARGIN;
+          const nx=Math.max(M,Math.min(norm.width-M,Math.round(_dragCx*scaleND)));
+          const ny=Math.max(M,Math.min(norm.height-M,Math.round(_dragCy*scaleND)));
+          const{p250:np250,p600:np600}=sampleBoth(norm,nx,ny);
+          tmpSp.patchLarge=np600;tmpSp.patchSmall=np250;
+          tmpSp.score=calcSpotScore(np600,STEP_TYPES[step]);
+          tmpSp.score250=calcSpotScore(np250,STEP_TYPES[step]);
+          const normArr=[...spots].map((s,i)=>i===step?tmpSp:s);
+          drawCircles(slotId,normArr,disp.width,disp.height);
+          if(spotHistEl) drawSpotHistogram(normArr,spotHistEl,sceneScores(normArr));
+          if(_vectorOpen) updateVectorPanel(normArr,frameData); // drag real-time
+        }
+      }
+    }
+    function _dragEnd(){
+      if(step>2)return;
+      const M=CONFIG.PATCH.MARGIN;
+      const nx=Math.max(M,Math.min(norm.width-M,Math.round(_dragCx*scaleND)));
+      const ny=Math.max(M,Math.min(norm.height-M,Math.round(_dragCy*scaleND)));
+      const tSp=performance.now();
+      const{p250,p600}=sampleBoth(norm,nx,ny);
+      tm.samplePatch+=Math.round(performance.now()-tSp);
+      const sc=calcSpotScore(p600,STEP_TYPES[step]);
+      const sc250=calcSpotScore(p250,STEP_TYPES[step]);
+      const sp={cx:_dragCx,cy:_dragCy,nx,ny,
+        r250:Math.round(CONFIG.PATCH.R_SMALL/scaleND),
+        r600:Math.round(CONFIG.PATCH.R_LARGE/scaleND),
+        label:STEPS[step],color:COLORS[step],
+        patchSmall:p250,patchLarge:p600,score:sc,score250:sc250,type:STEP_TYPES[step]};
+      pendingSpot=sp;
+      const tmpArr=[...spots]; tmpArr[step]=sp;
+      drawCircles(slotId,tmpArr,disp.width,disp.height);
+      if(spotHistEl) drawSpotHistogram(tmpArr,spotHistEl,sceneScores(tmpArr));
+    }
+    inner.onmousedown=e=>{
+      if(e.button!==0)return;
+      _dragging=true;
+      const r=inner.getBoundingClientRect();
+      _dragMove(e.clientX-r.left,e.clientY-r.top);
+    };
+    inner.onmousemove=e=>{
+      if(!_dragging)return;
+      const r=inner.getBoundingClientRect();
+      _dragMove(e.clientX-r.left,e.clientY-r.top);
+    };
+    inner.onmouseup=e=>{
+      if(!_dragging)return;
+      _dragging=false;
+      _dragEnd();
+    };
+    // Б2.1: touch — touchmove/touchend вешать на document в touchstart, снимать по завершении
+    inner.ontouchstart=e=>{
+      _dragging=true;
+      const t=e.touches[0],r=inner.getBoundingClientRect();
+      _dragMove(t.clientX-r.left,t.clientY-r.top);
+      function onTouchMove(ev){
+        if(!_dragging)return;
+        ev.preventDefault();
+        const tt=ev.touches[0],rr=inner.getBoundingClientRect();
+        _dragMove(tt.clientX-rr.left,tt.clientY-rr.top);
+      }
+      function cleanup(){
+        document.removeEventListener('touchmove',onTouchMove,{passive:false});
+        document.removeEventListener('touchend',onTouchEnd);
+        document.removeEventListener('touchcancel',onTouchCancel);
+      }
+      function onTouchEnd(ev){
+        ev.preventDefault();
+        _dragging=false;
+        _dragEnd();
+        cleanup();
+      }
+      // Б2: touchcancel — системное прерывание (звонок, свайп системы)
+      function onTouchCancel(ev){
+        _dragging=false;
+        _dragEnd();
+        cleanup();
+      }
+      document.addEventListener('touchmove',onTouchMove,{passive:false});
+      document.addEventListener('touchend',onTouchEnd,{once:true});
+      document.addEventListener('touchcancel',onTouchCancel,{once:true});
+      // C3.1: страховка — потеря фокуса окном (звонок, свайп iOS) снимает touchmove
+      window.addEventListener('blur',cleanup,{once:true});
+    };
+    // document mouseup — завершает drag если мышь отпущена вне картинки
+    function _docMouseUp(){
+      if(!_dragging)return;
+      _dragging=false;
+      _dragEnd();
+    }
+    document.removeEventListener('mouseup',inner._docMouseUp);
+    inner._docMouseUp=_docMouseUp;
+    document.addEventListener('mouseup',_docMouseUp);
+    
+  }catch(err){
+    res.innerHTML=`<div style="color:var(--red);font-size:10px;padding:5px">⚠ ${escapeHtml(err.message)}</div>`;
+    updateProgress(slotId, 100, '');
+    setUIState(slotId,'empty');
+    if(slotId==='A') _fileLoaded_A=false; // сброс — файл не загружен после краша
+    // восстановить кнопку — btn.onclick был обнулён до краша
+    const btnErr=document.getElementById('btn'+slotId);
+    if(btnErr){btnErr.onclick=()=>{document.getElementById('file'+slotId).click();};btnErr.innerHTML='↑ Выбрать файл';}
+  }finally{
+    _loadingInProgress=false;
+    document.getElementById('btn'+slotId)?.classList.remove('loading');
+    document.getElementById('canvas'+slotId)?.classList.remove('loading');
+    if(_progressTimers[slotId]){clearTimeout(_progressTimers[slotId]);delete _progressTimers[slotId];}
+  }
+}
+
+let _fileLoaded_A=false;
+let _loadingInProgress=false; // guard: блокировка повторной загрузки до завершения текущей
+document.getElementById('fileA').addEventListener('change',e=>{
+  if(_loadingInProgress) return; // UI-9: один файл за раз
+  updateProgress('A', 0, 'Начинаем...');
+  if(e.target.files[0]) loadSlot('A', e.target.files[0]);
+  e.target.value='';
+});
+// O5: хелпер отрисовки заблокированных кнопок спотов (используется в resetSlot и initEmptyUI)
+function renderDisabledSpotBtns(slotId){
+  const sb=document.getElementById('spotBtns'+slotId);
+  if(!sb)return;
+  const NAMES=['СЕРАЯ','БЕЛАЯ','ЧЁРНАЯ'];
+  let html='';
+  for(let i=0;i<3;i++){
+    html+=`<div class="spot-btn-pair"><button class="spot-btn-main" style="opacity:0.35;cursor:not-allowed" onclick="return false">${NAMES[i]}</button><button class="spot-btn-del" style="opacity:0.35;cursor:not-allowed" onclick="return false">✕</button></div>`;
+  }
+  sb.innerHTML=html; sb.classList.add('visible');
+}
+function resetSlot(slotId){
+  dbgLog('resetSlot '+slotId);
+  // K4: удалить orphan mouseup listener от предыдущей загрузки
+  const innerEl=document.getElementById('inner'+slotId);
+  if(innerEl&&innerEl._docMouseUp){
+    document.removeEventListener('mouseup',innerEl._docMouseUp);
+    innerEl._docMouseUp=null;
+  }
+  const canv=document.getElementById('canvas'+slotId);
+  const circ=document.getElementById('circles'+slotId);
+  // Б1/Б8: сбросить динамический aspect-ratio — вернуть к min-height placeholder
+  if(innerEl) innerEl.style.aspectRatio='';
+  if(canv){
+    const ctx=canv.getContext('2d');
+    ctx.clearRect(0,0,canv.width,canv.height);
+  }
+  if(circ){const ctx=circ.getContext('2d');ctx.clearRect(0,0,circ.width,circ.height);}
+  const histEl=document.getElementById('spotHist'+slotId);
+  if(histEl) histEl.style.display='none';
+  const autoBtn=document.getElementById('autoBtn'+slotId);
+  if(autoBtn) autoBtn.classList.remove('visible');
+
+  const res=document.getElementById('result'+slotId);
+  if(res) res.innerHTML='';
+  document.getElementById('exifInfo'+slotId).innerHTML='';
+  renderDisabledSpotBtns(slotId);
+  setUIState(slotId,'empty');
+  if(slotId==='A') _fileLoaded_A=false;
+  const emptyTm={parseExif:0,loadImg:0,normOrient:0,samplePatch:0,calcWB:0,loadTotal:0,sampleWhole:0};
+  renderDiag(slotId,[],null,'',emptyTm,null);
+}
+function renderCreativeTable(slotId){
+  const inp=document.getElementById('tInput'+slotId);
+  const out=document.getElementById('creativeTable'+slotId);
+  if(!inp||!out)return;
+  const T=parseFloat(inp.value);
+  if(!T||T<1000||T>15000){
+    out.innerHTML='<div style="color:var(--amber);font-size:9px;margin-top:6px">Введите K от 1000 до 15000</div>';
+    return;
+  }
+  const BA_STEPS=[-5,-4,-3,-2,-1,0,1,2,3,4,5];
+  const Tbase=Math.round(T/100)*100;
+  const K_ROWS=Array.from({length:11},(_,i)=>Tbase-500+i*100).filter(k=>k>=1000&&k<=15000);
+  const NEUTRAL=128;
+  function cellVal(Tcam,baStep){
+    const miredEff=CONFIG.WB.MIRED_SCALE/Tcam+baStep*5;
+    if(miredEff<=0)return null;
+    const Teff=CONFIG.WB.MIRED_SCALE/miredEff;
+    if(Teff<1000||Teff>23000)return null;
+    const[R2,,B2]=simRGB(NEUTRAL,NEUTRAL,NEUTRAL,T,Teff);
+    const sigma=calcSigma(R2,NEUTRAL,B2);    // знаковая — для отображения +/-
+    const dist=calcDist(R2,NEUTRAL,B2);      // евклидова — для N и isBest (fix Б-SIGMA)
+    const N=Math.ceil(dist/2.3);
+    return{sigma,dist,N};
+  }
+  function cellBg(v){
+    if(!v)return'rgba(40,40,50,0.5)';
+    const a=v.dist;                          // евклидова (fix Б-SIGMA)
+    if(a<1.2)return'background:rgba(40,140,40,0.55)';
+    if(a<3.0)return'background:rgba(60,120,40,0.35)';
+    if(a<6.0)return'background:rgba(180,140,0,0.25)';
+    return'background:rgba(160,40,40,0.20)';
+  }
+  function cellClr(v){
+    if(!v)return'var(--muted)';
+    const a=v.dist;                          // евклидова (fix Б-SIGMA)
+    if(a<1.2)return'#8fdb8f';
+    if(a<3.0)return'#b8d890';
+    if(a<6.0)return'var(--amber)';
+    return'#d07070';
+  }
+  const thS='font-size:7px;color:var(--muted);padding:2px 3px;text-align:center;border-bottom:1px solid var(--border);white-space:nowrap;min-width:26px';
+  let hdr=`<th style="${thS};text-align:left;width:44px">K \\ BA</th>`;
+  for(const ba of BA_STEPS){
+    const lbl=ba<0?`B+${-ba}`:ba>0?`A+${ba}`:'0';
+    const clr=ba<0?'var(--blue)':ba>0?'var(--amber)':'var(--muted)';
+    hdr+=`<th style="${thS};color:${clr}">${lbl}</th>`;
+  }
+  let rows='';
+  for(const Tr of K_ROWS){
+    const isNear=(Tr===Tbase);
+    const vals=BA_STEPS.map(ba=>cellVal(Tr,ba));
+    let bestAbs=Infinity;
+    vals.forEach(v=>{if(v&&v.dist<bestAbs)bestAbs=v.dist;});  // евклидова (fix Б-SIGMA)
+    let cells=`<td style="font-size:9px;color:${isNear?'var(--accent)':'var(--muted)'};font-weight:${isNear?'bold':'normal'};padding:1px 4px;white-space:nowrap">${Tr}K${isNear?' ◄':''}</td>`;
+    for(const v of vals){
+      const isBest=v&&v.dist===bestAbs&&bestAbs<2.3;          // евклидова (fix Б-SIGMA)
+      const bg=isBest?'background:rgba(40,200,80,0.35)':cellBg(v);
+      const clr=cellClr(v);
+      const txt=v?`${v.sigma>=0?'+':''}${v.sigma.toFixed(1)}/${v.N}`:'—';
+      const brd=isBest?'border:1px solid rgba(80,220,80,0.7)':'border:1px solid transparent';
+      cells+=`<td style="font-size:8px;font-family:var(--font-mono);color:${clr};text-align:center;padding:1px 2px;${bg};${brd}">${txt}</td>`;
+    }
+    rows+=`<tr style="${isNear?'background:rgba(232,120,34,0.08)':''}">${cells}</tr>`;
+  }
+  out.innerHTML=`
+    <div style="font-size:8px;color:var(--muted);margin:4px 0 5px">T источника: <b style="color:var(--accent)">${Math.round(T)}K</b><span style="margin-left:8px;opacity:0.6">Σ/N — хроматика / шагов до нейтрали</span></div>
+    <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:9px;width:100%">
+      <thead><tr>${hdr}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div style="font-size:7px;color:var(--muted);margin-top:4px;opacity:0.7">M/G — выставлять независимо по замеру тинта · идеальный серый R=G=B=128</div>`;
+}
+
+
+// Пустая структура при загрузке страницы
+(function initEmptyUI(){
+  // photoWrapContainerA всегда виден — preview frame на месте с первого рендера
+  const _pwc=document.getElementById('photoWrapContainerA');
+  if(_pwc)_pwc.style.display='block';
+  // Панели создаём ПЕРВЫМИ — до renderDiag, чтобы кнопки работали всегда
+  try{ initDebugPanel(); }catch(e){ console.error('initDebugPanel:',e); }
+  try{ initVectorPanel(); }catch(e){ console.error('initVectorPanel:',e); }
+  setUIState('A','empty');
+  const emptyTm={parseExif:0,loadImg:0,normOrient:0,samplePatch:0,calcWB:0,loadTotal:0,sampleWhole:0};
+  try{ renderDiag('A',[],null,'',emptyTm,null); }catch(e){ console.error('renderDiag init:',e); dbgLog('renderDiag init ERR: '+e.message); }
+  try{ renderDisabledSpotBtns('A'); }catch(e){ console.error('renderDisabledSpotBtns:',e); }
+  // Переключение режима Cr/Cb диаграммы — используется в _ycbcrToggle
+  window._ycbcrToggle = function(){
+    _ycbcrMode = (_ycbcrMode==='spots') ? 'frame' : 'spots';
+    // Перерисовать — берём текущие данные из последнего рендера
+    const el = document.getElementById('_vecCanvas');
+    const r  = document.getElementById('resultA');
+    if(el && r && r._report){
+      const{spots,frame}=r._report;
+      drawYCbCrDiag(el, _ycbcrMode==='spots'?spots:[], null,
+                    _ycbcrMode==='frame'?frame:r._report);
+    }
+  };
+})();
+
+// ═══════════════════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════════════════
+function exportReport(slotId){
+  const el=document.getElementById('result'+slotId);
+  const r=el&&el._report;if(!r)return;
+  if(!r.patchSmall){
+    // нет серого спота — нечего экспортировать
+    const btn=document.getElementById('export'+slotId);
+    if(btn){const orig=btn.textContent;btn.textContent='нет серого спота';setTimeout(()=>btn.textContent=orig,2000);}
+    return;
+  }
+  const p=r.patchSmall,q=r.patchLarge,ref=r.linTrim600,Tb=ref.T_base;
+  const fBAv=t=>{const{stepsBA_int:v}=calcStepsBA(ref.T_exact,t);return v>0?`A+${v}`:v<0?`B+${-v}`:'B/A 0';};
+  const gmLbl=ref.stepsGM_int>0?`M+${ref.stepsGM_int}`:ref.stepsGM_int<0?`G+${-ref.stepsGM_int}`:'M/G 0';
+  const f=(wb,lbl)=>{
+    const gm=wb.stepsGM_int>0?`M+${wb.stepsGM_int}`:wb.stepsGM_int<0?`G+${-wb.stepsGM_int}`:'M/G 0';
+    const ba=wb.stepsBA_int>0?`A+${wb.stepsBA_int}`:wb.stepsBA_int<0?`B+${-wb.stepsBA_int}`:'B/A 0';
+    return `${lbl.padEnd(14)}${wb.T_base}K ${gm} ${ba}  ~${Math.round(wb.T_exact)}K rem:${wb.T_remainder>=0?'+':''}${Math.round(wb.T_remainder)}K gm:${wb.stepsGM>=0?'+':''}${wb.stepsGM.toFixed(3)} gr:${wb.green.toFixed(4)}`;
+  };
+  
+  const L=[`=== WB DIAG v25 · ${r.filename}${r.fileSizeKb?' ('+r.fileSizeKb+' KB)':''} · ${new Date().toLocaleString('ru')} ===`];
+  
+  if(r.exif&&(r.exif.model||r.exif.iso)){
+    const ep=[];
+    if(r.exif.model)ep.push(r.exif.model);if(r.exif.iso)ep.push(`ISO ${r.exif.iso}`);
+    if(r.exif.make==='Canon'){
+      ep.push(r.exif.wbMode===1?'WB Manual':'WB Auto');
+      if(r.exif.colorTemp!==null)ep.push(`${r.exif.colorTemp}K`);
+      const baV=r.exif.wbShiftBA??0,mgV=r.exif.wbShiftMG??0;
+      ep.push(`B/A: ${baV>0?`A+${baV}`:baV<0?`B+${-baV}`:'B/A 0'}`);
+      ep.push(`M/G: ${mgV>0?`G+${mgV}`:mgV<0?`M+${-mgV}`:'M/G 0'}`);
+    }
+    if(r.exif.lensModel)ep.push(escapeHtml(r.exif.lensModel));
+    if(r.exif.error)ep.push(`!! ${escapeHtml(r.exif.error)}`);
+    L.push(`EXIF: ${ep.join(' · ')}`);
+  }else L.push(`EXIF: отсутствует`);
+  if(r.normPx)L.push(`Кадр: ${r.normPx.toLocaleString()}px (${(r.normPx/1e6).toFixed(1)}MP)`);
+  if(r.superSpot&&r.superSpot.valid){const ss=r.superSpot,dp=r.frame&&r.frame.count?r.frame.count:1;
+    L.push(`Суперспот: count=${ss.count} (${(ss.count/dp*100).toFixed(1)}% disp) T=${ss.T_base}K σT=${ss.sigma_T}K dynTHR=${ss.dynTHR}`);
+    L.push(`  RGB med=${ss.medR}/${ss.medG}/${ss.medB} trim=${ss.trimR||'?'}/${ss.trimG||'?'}/${ss.trimB||'?'} σR/Y=${ss.sigR} σG/Y=${ss.sigG} σB/Y=${ss.sigB}`);
+    if(ss.yBins)L.push(`  Y-бины(0-50/50-100/100-150/150-200/200-255): ${ss.yBins.join('/')}`);
+    if(ss.whiteSuper){const ws=ss.whiteSuper;L.push(`  белый: ${ws.T_base}K Δ${ws.deltaK}K`);}
+  }
+
+  // Координаты спотов в пикселях оригинала
+  if(r.spots&&r.spots.length){
+    const coordParts=r.spots.map(s=>{
+      const name=s.type==='gray'?'серый':s.type==='white'?'белый':'чёрный';
+      return `${name}(${s.nx},${s.ny})`;
+    }).join(' ');
+    L.push(`Координаты спотов (оригинал): ${coordParts}`);
+    // Score 600px / 250px раздельно
+    const scoreParts=r.spots.map(s=>{
+      const name=s.type==='gray'?'серый':s.type==='white'?'белый':'чёрный';
+      const s6=Math.round(s.score);
+      const s2=s.score250!=null?Math.round(s.score250):'?';
+      return `${name} 600:${s6} 250:${s2}`;
+    }).join('  ');
+    L.push(`Score спотов: ${scoreParts}`);
+  }
+  
+  const warns=[];
+  warns.push(...getPatchWarnings(p.medR,p.medG,p.medB).map(w=>`250px ${w}`));
+  warns.push(...getPatchWarnings(q.medR,q.medG,q.medB).map(w=>`600px ${w}`));
+  if(r.jpegMed600.T_exact>15000)warns.push('JPEG выше 15000K');
+  if(r.linMed600.T_exact>15000)warns.push('LIN выше 15000K');
+  if(warns.length)L.push(`⚠ ${warns.join(' · ')}`);
+  
+  L.push(`RGB 250: med=${p.medR}/${p.medG}/${p.medB} шум=${r.n250.toFixed(1)}% px=${p.count}`);
+  L.push(`RGB 600: med=${q.medR}/${q.medG}/${q.medB} шум=${r.n600.toFixed(1)}% px=${q.count}`);
+  L.push(`D зон: JPEG DK=${Math.abs(Math.round(r.jpegMed250.T_exact)-Math.round(r.jpegMed600.T_exact))}K  LIN DK=${Math.abs(Math.round(r.linMed250.T_exact)-Math.round(r.linMed600.T_exact))}K`);
+  L.push('--- Медиана ---');
+  L.push(f(r.jpegMed250,'JPEG 250'));L.push(f(r.linMed250,'LIN  250'));
+  L.push(f(r.jpegMed600,'JPEG 600'));L.push(f(r.linMed600,'LIN  600'));
+  
+  if(r.exif&&r.exif.make==='Canon'&&r.exif.colorTemp!==null&&r.jpegMed600){
+    const dR=Math.round(r.jpegMed600.T_exact)-r.exif.colorTemp,dL=Math.round(r.linMed600.T_exact)-r.exif.colorTemp;
+    L.push(`Canon EXIF vs 600med: K=${r.exif.colorTemp}K  JPEG=${Math.round(r.jpegMed600.T_exact)}K(D${dR>=0?'+':''}${dR})  LIN=${Math.round(r.linMed600.T_exact)}K(D${dL>=0?'+':''}${dL})  MG EXIF=${r.exif.wbShiftMG} JPEG=${r.jpegMed600.stepsGM>=0?'+':''}${r.jpegMed600.stepsGM.toFixed(3)} LIN=${r.linMed600.stepsGM>=0?'+':''}${r.linMed600.stepsGM.toFixed(3)}`);
+  }
+  
+  L.push(`--- Варианты (LIN trim 600) ---`);
+  L.push(`холоднее: ${Tb-200}K ${fBAv(Tb-200)} ${gmLbl}  |  оптимум: ${Tb}K ${fBAv(Tb)} ${gmLbl} <  |  теплее: ${Tb+200}K ${fBAv(Tb+200)} ${gmLbl}`);
+  
+  const fPatch=(sp,name)=>{
+    if(!sp)return;
+    const qq=sp.patchLarge,warns=getPatchWarnings(qq.medR,qq.medG,qq.medB).join(' ');
+    const wb=calcWB(qq.medR,qq.medG,qq.medB,false),wl=calcWB(qq.medR,qq.medG,qq.medB,true);
+    const gm=wb.stepsGM_int>0?`M+${wb.stepsGM_int}`:wb.stepsGM_int<0?`G+${-wb.stepsGM_int}`:'M/G 0';
+    const ba=wb.stepsBA_int>0?`A+${wb.stepsBA_int}`:wb.stepsBA_int<0?`B+${-wb.stepsBA_int}`:'B/A 0';
+    L.push(`--- ${name} (med 600px) ---`);
+    L.push(`RGB: med=${qq.medR}/${qq.medG}/${qq.medB} шум=${noiseVal(qq).toFixed(1)}% ${warns}`);
+    L.push(`JPEG  ${wb.T_base}K ${gm} ${ba}  ~${Math.round(wb.T_exact)}K`);
+    L.push(`LIN   ${wl.T_base}K ${wl.stepsGM_int>0?'M+'+wl.stepsGM_int:wl.stepsGM_int<0?'G+'+ (-wl.stepsGM_int):'M/G 0'} ${wl.stepsBA_int>0?'A+'+wl.stepsBA_int:wl.stepsBA_int<0?'B+'+ (-wl.stepsBA_int):'B/A 0'}  ~${Math.round(wl.T_exact)}K`);
+  };
+  if(r.spots&&r.spots[1])fPatch(r.spots[1],'БЕЛАЯ');
+  if(r.spots&&r.spots[2])fPatch(r.spots[2],'ЧЁРНАЯ');
+  
+  const frm=r.frame;
+  L.push(`--- ВЕСЬ КАДР (медиана) ---`);
+  L.push(`RGB: med=${frm.medR}/${frm.medG}/${frm.medB} px=${frm.count}`);
+  L.push(`пересвет: ${frm.overPct}%  тени: ${frm.underPct}%`);
+  if(r.wbFrame)L.push(`JPEG frame: ${r.wbFrame.T_base}K ${r.wbFrame.stepsGM_int>0?'M+'+r.wbFrame.stepsGM_int:r.wbFrame.stepsGM_int<0?'G+'+ (-r.wbFrame.stepsGM_int):'M/G 0'} ${r.wbFrame.stepsBA_int>0?'A+'+r.wbFrame.stepsBA_int:r.wbFrame.stepsBA_int<0?'B+'+ (-r.wbFrame.stepsBA_int):'B/A 0'} ~${Math.round(r.wbFrame.T_exact)}K`);
+  if(r.wbFrameLin)L.push(`LIN frame:   ${r.wbFrameLin.T_base}K ${r.wbFrameLin.stepsGM_int>0?'M+'+r.wbFrameLin.stepsGM_int:r.wbFrameLin.stepsGM_int<0?'G+'+ (-r.wbFrameLin.stepsGM_int):'M/G 0'} ${r.wbFrameLin.stepsBA_int>0?'A+'+r.wbFrameLin.stepsBA_int:r.wbFrameLin.stepsBA_int<0?'B+'+ (-r.wbFrameLin.stepsBA_int):'B/A 0'} ~${Math.round(r.wbFrameLin.T_exact)}K`);
+  
+  L.push(`--- Тайминги ---`);
+  L.push(`parseExif:${r.tm.parseExif}ms  loadImg:${r.tm.loadImg}ms  normOrient:${r.tm.normOrient}ms  sampleWhole:${r.tm.sampleWhole}ms  samplePatch:${r.tm.samplePatch}ms  calcWB:${r.tm.calcWB}ms  loadTotal:${r.tm.loadTotal+r.tm.sampleWhole}ms`);
+  L.push(`GM_COEFF: ${CONFIG.WB.GM_COEFF}`);
+  L.push('='.repeat(60));
+  
+  const text=L.join('\n');
+  const blob=new Blob([text],{type:'text/plain'});
+  const sf=new File([blob],`wb_diag_${r.filename.replace(/\.[^.]+$/,'')}_${new Date().toLocaleString('ru').replace(/[/:, ]/g,'').slice(0,12)}.txt`,{type:'text/plain'});
+  
+  if(!/iPhone|iPad|iPod/i.test(navigator.userAgent)){
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=sf.name;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  } else if(navigator.share&&navigator.canShare&&navigator.canShare({files:[sf]})){
+    navigator.share({files:[sf]}).catch(()=>copyTxt(text,slotId));
+  } else copyTxt(text,slotId);
+}
+
+function copyTxt(text,slotId){
+  const btn=document.getElementById('export'+slotId),orig=btn.textContent;
+  const flash=msg=>{btn.textContent=msg;setTimeout(()=>btn.textContent=orig,2000);};
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(text).then(()=>flash('OK скопировано')).catch(()=>fb(text,flash));
+  else fb(text,flash);
+}
+function fb(text,flash){
+  const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;opacity:0';
+  document.body.appendChild(ta);ta.select();
+  try{document.execCommand('copy');flash('OK скопировано');}catch{flash('скопируйте вручную');}
+  document.body.removeChild(ta);
+}
+</script>
+</body>
+</html>
